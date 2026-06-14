@@ -38,8 +38,8 @@ document.body.appendChild(renderer.domElement);
 // ---- scene & camera ----
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
-const LOOK = new THREE.Vector3(-10, 0, -13); // down the river through the meadow
-camera.position.set(26, 9, 26);
+const LOOK = new THREE.Vector3(0, -3, -14); // pulled back, looking down over the river
+camera.position.set(30, 68, 60);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----

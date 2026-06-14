@@ -35,6 +35,27 @@ export function isLand(x, z, margin = 0.8) {
   return terrainHeight(x, z) > WATER_LEVEL + margin;
 }
 
+// Light, sunlit clearings (open yellow-green meadows) scattered through the
+// forest. Ground brightens here, trees stay out, and flowers cluster in them.
+export const CLEARINGS = [
+  { x: -48, z: 34, r: 15 },
+  { x: 58, z: 28, r: 17 },
+  { x: -34, z: -58, r: 14 },
+  { x: 72, z: -52, r: 16 },
+  { x: -88, z: -18, r: 13 },
+  { x: 24, z: 64, r: 15 },
+  { x: 100, z: 18, r: 14 },
+];
+
+export function inClearing(x, z) {
+  for (const c of CLEARINGS) {
+    const dx = x - c.x;
+    const dz = z - c.z;
+    if (dx * dx + dz * dz < c.r * c.r) return c;
+  }
+  return null;
+}
+
 function smoothstep(a, b, x) {
   const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1);
   return t * t * (3 - 2 * t);

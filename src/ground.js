@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { terrainHeight, WATER_LEVEL } from './terrain.js';
+import { terrainHeight, WATER_LEVEL, inClearing } from './terrain.js';
 
-// Forested island mesh built from the shared terrainHeight function.
+// Forested land mesh built from the shared terrainHeight function. Sunlit
+// clearings render as light yellow-green meadow patches.
 export function createGround() {
   const size = 300;
   const seg = 220;
@@ -16,6 +17,8 @@ export function createGround() {
   const shore = new THREE.Color('#9a8a55');
   const shallow = new THREE.Color('#41513f');
   const deep = new THREE.Color('#16261f');
+  const meadow = new THREE.Color('#c6c24a');
+  const meadowBright = new THREE.Color('#e2d878');
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -24,7 +27,13 @@ export function createGround() {
     pos.setY(i, h);
 
     const c = new THREE.Color();
-    if (h > 1.4) {
+    const clr = inClearing(x, z);
+    if (clr) {
+      const dx = x - clr.x;
+      const dz = z - clr.z;
+      const t = 1 - Math.sqrt(dx * dx + dz * dz) / clr.r; // 1 centre -> 0 edge
+      c.copy(meadow).lerp(meadowBright, Math.max(0, t) * 0.7);
+    } else if (h > 1.4) {
       c.copy(land).lerp(landLight, Math.min(1, (h - 1.4) * 0.3));
     } else if (h > 0) {
       c.copy(shore);
@@ -50,3 +59,4 @@ export function createGround() {
   mesh.receiveShadow = true;
   return mesh;
 }
+

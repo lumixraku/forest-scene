@@ -4,16 +4,17 @@ import * as THREE from 'three';
 export const STREAM_HALF_WIDTH = 7.0;
 
 const points = [
-  [-120, 4],
-  [-60, -6],
-  [-20, -13],
-  [12, -16],
-  [50, -19],
-  [120, -24],
+  [-150, 9],
+  [-95, -2],
+  [-40, -11],
+  [-5, -15],
+  [40, -18],
+  [95, -22],
+  [150, -27],
 ].map(([x, z]) => new THREE.Vector3(x, 0, z));
 
 export const streamCurve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.4);
-export const streamSamples = streamCurve.getSpacedPoints(140);
+export const streamSamples = streamCurve.getSpacedPoints(200);
 
 export function distToStream(x, z) {
   let min = Infinity;
