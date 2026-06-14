@@ -19,15 +19,15 @@ export function createWorld(scene) {
 
   // Fill light — bright sky bounce + lifted ground bounce so shadowed sides
   // of the foliage still read (no fog to lift them atmospherically).
-  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, new THREE.Color('#6a6438'), 3.0);
+  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, new THREE.Color('#6a6438'), 4.5);
   scene.add(hemi);
 
   // Flat ambient to keep the deep greens visible without fog.
-  scene.add(new THREE.AmbientLight(new THREE.Color('#82915f'), 2.0));
+  scene.add(new THREE.AmbientLight(new THREE.Color('#82915f'), 3.0));
 
   // Warm sunlight pouring in from the clearing (ahead + above the camera).
   const sunPos = new THREE.Vector3(-8, 30, -40);
-  const sun = new THREE.DirectionalLight(PALETTE.sun, 2.5);
+  const sun = new THREE.DirectionalLight(PALETTE.sun, 3.5);
   sun.position.copy(sunPos);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);

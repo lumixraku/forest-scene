@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { applyWind } from './wind.js';
+import { isLand } from './terrain.js';
 
 // Undergrowth: thousands of grass tufts, scattered bushes and a few warm
 // wildflowers concentrated in the sunlit clearing.
@@ -76,11 +77,19 @@ export function createFoliage(scene, { clearing }) {
 }
 
 function scatter(clearing, minR = 2, maxR = 110) {
-  const a = Math.random() * Math.PI * 2;
-  if (Math.random() < 0.5) {
-    const r = Math.random() * 16;
-    return { x: clearing.x + Math.cos(a) * r, z: clearing.y + Math.sin(a) * r };
+  for (let a = 0; a < 12; a++) {
+    const ang = Math.random() * Math.PI * 2;
+    let p;
+    if (Math.random() < 0.5) {
+      const r = Math.random() * 16;
+      p = { x: clearing.x + Math.cos(ang) * r, z: clearing.y + Math.sin(ang) * r };
+    } else {
+      const r = minR + Math.random() * (maxR - minR);
+      p = { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
+    }
+    if (isLand(p.x, p.z, 0.6)) return p; // keep undergrowth out of the water
   }
+  const ang = Math.random() * Math.PI * 2;
   const r = minR + Math.random() * (maxR - minR);
-  return { x: Math.cos(a) * r, z: Math.sin(a) * r };
+  return { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
 }

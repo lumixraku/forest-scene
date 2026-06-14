@@ -1,40 +1,39 @@
 import * as THREE from 'three';
+import { terrainHeight, WATER_LEVEL } from './terrain.js';
 
-// Gently rolling terrain with a flattened clearing and raised enclosing edges.
+// Forested island mesh built from the shared terrainHeight function.
 export function createGround() {
-  const size = 240;
-  const seg = 180;
+  const size = 300;
+  const seg = 220;
   const geo = new THREE.PlaneGeometry(size, size, seg, seg);
   geo.rotateX(-Math.PI / 2);
 
   const pos = geo.attributes.position;
   const colors = [];
-  const base = new THREE.Color('#4d5d2b');
-  const dark = new THREE.Color('#3a4720');
-  const light = new THREE.Color('#6d8438');
+
+  const land = new THREE.Color('#4d5d2b');
+  const landLight = new THREE.Color('#6d8438');
+  const shore = new THREE.Color('#9a8a55');
+  const shallow = new THREE.Color('#41513f');
+  const deep = new THREE.Color('#16261f');
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    const d = Math.sqrt(x * x + z * z);
-
-    // Layered low-frequency noise for gentle hills.
-    let h =
-      Math.sin(x * 0.05) * 1.2 +
-      Math.cos(z * 0.045) * 1.0 +
-      Math.sin(x * 0.13 + z * 0.11) * 0.5 +
-      Math.cos(z * 0.2 - x * 0.07) * 0.3;
-
-    // Keep the central clearing flat (a sunny meadow).
-    h *= THREE.MathUtils.smoothstep(d, 6, 22);
-    // Raise the far edges so the forest feels enclosed.
-    h += THREE.MathUtils.smoothstep(d, 45, 100) * 4.5;
-
+    const h = terrainHeight(x, z);
     pos.setY(i, h);
 
-    // Vertex colour variation — brighter on the little hillocks.
-    const c = base.clone().lerp(h > 1.3 ? light : dark, Math.min(1, Math.abs(h) * 0.4));
-    const v = 0.85 + 0.3 * Math.random();
+    const c = new THREE.Color();
+    if (h > 1.4) {
+      c.copy(land).lerp(landLight, Math.min(1, (h - 1.4) * 0.3));
+    } else if (h > 0) {
+      c.copy(shore);
+    } else if (h > -2) {
+      c.copy(shallow);
+    } else {
+      c.copy(deep);
+    }
+    const v = 0.9 + 0.2 * Math.random();
     colors.push(c.r * v, c.g * v, c.b * v);
   }
 
