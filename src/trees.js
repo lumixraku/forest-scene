@@ -2,10 +2,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind } from './wind.js';
 import { isLand } from './terrain.js';
+import { CLEARINGS } from './terrain.js';
 
 // Procedural low-poly pine forest, rendered as two InstancedMeshes
 // (rigid trunks + swaying crowns) so the whole wood is cheap to draw.
 export function createTrees(scene, { avoid = [] } = {}) {
+  const allAvoid = [...avoid, ...CLEARINGS.map((c) => ({ c: new THREE.Vector2(c.x, c.z), r: c.r + 1 }))];
   const trunkGeo = new THREE.CylinderGeometry(0.28, 0.5, 6, 6, 1, false);
   trunkGeo.translate(0, 3, 0);
 
@@ -23,7 +25,7 @@ export function createTrees(scene, { avoid = [] } = {}) {
   });
   applyWind(crownMat, { strength: 0.22, freq: 1.2, heightFactor: 0.10 });
 
-  const COUNT = 170;
+  const COUNT = 680;
   const dummy = new THREE.Object3D();
   const matrices = [];
   const crownColors = new Float32Array(COUNT * 3);
@@ -34,12 +36,12 @@ export function createTrees(scene, { avoid = [] } = {}) {
   while (placed < COUNT && attempts < COUNT * 12) {
     attempts++;
     const a = Math.random() * Math.PI * 2;
-    const r = 10 + Math.random() * 98;
+    const r = 6 + Math.random() * 138;
     const x = Math.cos(a) * r;
     const z = Math.sin(a) * r;
 
     let ok = true;
-    for (const av of avoid) {
+    for (const av of allAvoid) {
       const dx = x - av.c.x;
       const dz = z - av.c.y;
       if (dx * dx + dz * dz < av.r * av.r) { ok = false; break; }
