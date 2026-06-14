@@ -7,6 +7,7 @@ import { createTrees } from './trees.js';
 import { createFoliage } from './foliage.js';
 import { createGodRays } from './godrays.js';
 import { createParticles } from './particles.js';
+import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
 import { updateWind } from './wind.js';
 
@@ -30,34 +31,35 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.5;
+renderer.toneMappingExposure = 1.8;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 // ---- scene & camera ----
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 600);
-const LOOK = new THREE.Vector3(-4, 7, -18); // look toward the sunlit clearing
-camera.position.set(2, 3.2, 20);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
+const LOOK = new THREE.Vector3(-10, 0, -13); // down the river through the meadow
+camera.position.set(26, 9, 26);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
-const { PALETTE } = createWorld(scene);
+const { sunPos, PALETTE } = createWorld(scene);
 
-// ---- ground ----
+// ---- ground (forested island) ----
 scene.add(createGround());
 
-// ---- trees (keep the clearing + spawn point open) ----
-const clearing = new THREE.Vector2(0, -18);
-createTrees(scene, {
-  avoid: [
-    { c: clearing, r: 15 },
-    { c: new THREE.Vector2(0, 18), r: 5 },
-  ],
-});
+// ---- trees on the island ----
+createTrees(scene, { avoid: [] });
 
-// ---- undergrowth (meadow denser in the clearing) ----
-createFoliage(scene, { clearing });
+// ---- undergrowth on the island ----
+createFoliage(scene, { clearing: new THREE.Vector2(0, -16) });
+
+// ---- official Water surface + river rocks ----
+const stream = createStream(scene, sunPos);
+scene.add(stream.group);
+
+// ---- sun glow + volumetric shafts ----
+const clearing = new THREE.Vector2(0, -16);
 
 // ---- sun glow + volumetric shafts ----
 const godrays = createGodRays(scene, clearing, PALETTE);
@@ -71,7 +73,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.target.copy(LOOK);
 controls.minDistance = 2;
-controls.maxDistance = 120;
+controls.maxDistance = 260;
 controls.maxPolarAngle = Math.PI * 0.52;
 controls.update();
 
@@ -119,6 +121,7 @@ function animate() {
   move(dt);
   updateWind(t);
   godrays.update(t);
+  stream.update(dt);
   particles.update(dt, t);
   controls.update();
   composer.render();

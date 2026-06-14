@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind } from './wind.js';
+import { isLand } from './terrain.js';
 
 // Procedural low-poly pine forest, rendered as two InstancedMeshes
 // (rigid trunks + swaying crowns) so the whole wood is cheap to draw.
@@ -43,6 +44,7 @@ export function createTrees(scene, { avoid = [] } = {}) {
       const dz = z - av.c.y;
       if (dx * dx + dz * dz < av.r * av.r) { ok = false; break; }
     }
+    if (ok && !isLand(x, z, 1.2)) ok = false; // only on the island, never in water
     if (!ok) continue;
 
     const scale = 0.7 + Math.random() * 1.1;
