@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind } from './wind.js';
 import { isLand, terrainHeight, CLEARINGS } from './terrain.js';
 import { streamCurve, STREAM_HALF_WIDTH } from './streamPath.js';
@@ -31,12 +32,11 @@ export function createFoliage(scene, { clearing }) {
   }
   grass.instanceMatrix.needsUpdate = true;
 
-  // --- bushes (squashed icosahedrons) ---
-  const bushGeo = new THREE.IcosahedronGeometry(0.9, 0);
+  // --- bushes (clustered foliage blobs) ---
+  const bushGeo = buildBushGeo();
   const bushMat = new THREE.MeshStandardMaterial({
     color: new THREE.Color('#5a7233'),
-    roughness: 1,
-    flatShading: true,
+    roughness: 0.85,
   });
   applyWind(bushMat, { strength: 0.18, freq: 1.3, heightFactor: 0.3 });
   const BC = 440;
@@ -203,4 +203,29 @@ function scatter(clearing, minR = 2, maxR = 110) {
   const ang = Math.random() * Math.PI * 2;
   const r = minR + Math.random() * (maxR - minR);
   return { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
+}
+
+function buildBushGeo() {
+  const blobs = [
+    { x: 0,     y: 0,    z: 0,    r: 0.7 },
+    { x: 0.5,   y: 0.15, z: 0.3,  r: 0.5 },
+    { x: -0.45, y: 0.2,  z: -0.2, r: 0.55 },
+    { x: 0.1,   y: 0.35, z: -0.5, r: 0.45 },
+    { x: -0.3,  y: -0.1, z: 0.45, r: 0.42 },
+    { x: 0.35,  y: 0.4,  z: 0.1,  r: 0.38 },
+  ];
+  const parts = blobs.map(b => {
+    const sph = new THREE.IcosahedronGeometry(b.r, 1);
+    const pos = sph.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const n = Math.sin(x * 4 + y * 3) * Math.cos(z * 4) * 0.15;
+      pos.setXYZ(i, x * (1 + n), y * (1 + n), z * (1 + n));
+    }
+    pos.needsUpdate = true;
+    sph.computeVertexNormals();
+    sph.translate(b.x, b.y, b.z);
+    return sph;
+  });
+  return mergeGeometries(parts, false);
 }
