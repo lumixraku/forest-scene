@@ -3,9 +3,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
 import { createWorld } from './world.js';
 import { createGround } from './ground.js';
+import { createGrass } from './grass.js';
 import { createTrees } from './trees.js';
 import { createFoliage } from './foliage.js';
-import { createGodRays } from './godrays.js';
 import { createParticles } from './particles.js';
 import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
@@ -30,42 +30,38 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.NeutralToneMapping;
-renderer.toneMappingExposure = 1.8;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 // ---- scene & camera ----
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
-const LOOK = new THREE.Vector3(0, -3, -14); // pulled back, looking down over the river
-camera.position.set(30, 68, 60);
+// down in the valley, a couple of metres above the stream, looking downstream
+const LOOK = new THREE.Vector3(24, 2.0, -17);
+camera.position.set(-40, 6.0, -4);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
-const { sunPos, PALETTE } = createWorld(scene);
+const { sunPos } = createWorld(scene);
 
-// ---- ground (forested island) ----
+// ---- valley ground + instanced grass ----
 scene.add(createGround());
+createGrass(scene);
 
-// ---- trees on the island ----
-createTrees(scene, { avoid: [] });
+// ---- forest ----
+createTrees(scene);
 
-// ---- undergrowth on the island ----
-createFoliage(scene, { clearing: new THREE.Vector2(0, -16) });
+// ---- flowers + bushes ----
+createFoliage(scene);
 
-// ---- official Water surface + river rocks ----
+// ---- water + foam + boulders ----
 const stream = createStream(scene, sunPos);
 scene.add(stream.group);
 
-// ---- sun glow + volumetric shafts ----
-const clearing = new THREE.Vector2(0, -16);
-
-// ---- sun glow + volumetric shafts ----
-const godrays = createGodRays(scene, clearing, PALETTE);
-
 // ---- dust + birds ----
-const particles = createParticles(scene, clearing);
+const particles = createParticles(scene, new THREE.Vector2(0, -16));
 
 // ---- controls: free exploration ----
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -74,7 +70,7 @@ controls.dampingFactor = 0.06;
 controls.target.copy(LOOK);
 controls.minDistance = 2;
 controls.maxDistance = 260;
-controls.maxPolarAngle = Math.PI * 0.52;
+controls.maxPolarAngle = Math.PI * 0.56;
 controls.update();
 
 // ---- post-processing ----
@@ -120,7 +116,6 @@ function animate() {
   const t = clock.elapsedTime;
   move(dt);
   updateWind(t);
-  godrays.update(t);
   stream.update(dt);
   particles.update(dt, t);
   controls.update();

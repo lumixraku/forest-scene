@@ -1,45 +1,42 @@
 import * as THREE from 'three';
 
-// Palette sampled directly from the Protopop "Cozy Country" video frames.
+// Bright summer daylight — near-white hazy sky, warm sun, soft distance fog,
+// matching the airy look of the Cozy Country footage.
 const PALETTE = {
-  fog: new THREE.Color('#9aa86c'),
-  skyTop: new THREE.Color('#6f8460'),
-  skyBottom: new THREE.Color('#b9bd8e'),
-  sun: new THREE.Color('#ffe6a6'),
-  ambSky: new THREE.Color('#a9b97e'),
-  ambGround: new THREE.Color('#2f2c14'),
+  fog: new THREE.Color('#dfe9dc'),
+  skyTop: new THREE.Color('#8fbede'),
+  skyBottom: new THREE.Color('#eef4ea'),
+  sun: new THREE.Color('#fff1d4'),
+  ambSky: new THREE.Color('#dce9f2'),
+  ambGround: new THREE.Color('#4a5530'),
 };
 
 export function createWorld(scene) {
-  // No fog — clean, crisp forest (user preference).
   scene.background = PALETTE.skyBottom.clone();
+  scene.fog = new THREE.Fog(PALETTE.fog, 70, 260);
 
-  // Soft gradient sky dome (mostly hidden behind canopy / fog).
   scene.add(makeSkyDome());
 
-  // Fill light — bright sky bounce + lifted ground bounce so shadowed sides
-  // of the foliage still read (no fog to lift them atmospherically).
-  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, new THREE.Color('#6a6438'), 4.5);
+  // sky bounce + green ground bounce
+  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, PALETTE.ambGround, 1.9);
   scene.add(hemi);
+  scene.add(new THREE.AmbientLight(new THREE.Color('#cfd8c2'), 0.55));
 
-  // Flat ambient to keep the deep greens visible without fog.
-  scene.add(new THREE.AmbientLight(new THREE.Color('#82915f'), 3.0));
-
-  // Warm sunlight pouring in from the clearing (ahead + above the camera).
-  const sunPos = new THREE.Vector3(-8, 30, -40);
-  const sun = new THREE.DirectionalLight(PALETTE.sun, 3.5);
+  // warm sun, high and slightly behind the view so the canopy is backlit
+  const sunPos = new THREE.Vector3(45, 75, -55);
+  const sun = new THREE.DirectionalLight(PALETTE.sun, 3.0);
   sun.position.copy(sunPos);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const s = 80;
+  sun.shadow.mapSize.set(4096, 4096);
+  const s = 95;
   sun.shadow.camera.left = -s;
   sun.shadow.camera.right = s;
   sun.shadow.camera.top = s;
   sun.shadow.camera.bottom = -s;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 160;
+  sun.shadow.camera.far = 240;
   sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.04;
+  sun.shadow.normalBias = 0.05;
   scene.add(sun);
   scene.add(sun.target);
 

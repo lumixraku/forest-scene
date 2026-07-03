@@ -24,5 +24,6 @@ export function distToStream(x, z) {
     const d = dx * dx + dz * dz;
     if (d < min) min = d;
   }
-  return Math.sqrt(min);
+  // wobble so the banks meander instead of running like a canal
+  return Math.sqrt(min) + Math.sin(x * 0.16) * 0.9 + Math.cos(z * 0.2) * 0.7;
 }
