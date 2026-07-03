@@ -26,7 +26,7 @@ export function createParticles(scene, clearing) {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       color: new THREE.Color('#fff2c8'),
-      opacity: 0.35,
+      opacity: 0.15,
       sizeAttenuation: true,
     })
   );

@@ -1,30 +1,31 @@
 import * as THREE from 'three';
 
-// Bright summer daylight — near-white hazy sky, warm sun, soft distance fog,
-// matching the airy look of the Cozy Country footage.
+// Blazing summer afternoon (~2-3pm) — saturated blue sky, hot near-white sun
+// high overhead, crisp short shadows, only a faint warm heat-haze far away.
 const PALETTE = {
-  fog: new THREE.Color('#dfe9dc'),
-  skyTop: new THREE.Color('#8fbede'),
-  skyBottom: new THREE.Color('#eef4ea'),
-  sun: new THREE.Color('#fff1d4'),
-  ambSky: new THREE.Color('#dce9f2'),
-  ambGround: new THREE.Color('#4a5530'),
+  fog: new THREE.Color('#e9edd2'),
+  skyTop: new THREE.Color('#3f8edd'),
+  skyBottom: new THREE.Color('#cfe6f2'),
+  sun: new THREE.Color('#fff0c4'),
+  ambSky: new THREE.Color('#bcd8ee'),
+  ambGround: new THREE.Color('#5a6030'),
 };
 
 export function createWorld(scene) {
   scene.background = PALETTE.skyBottom.clone();
-  scene.fog = new THREE.Fog(PALETTE.fog, 70, 260);
+  // faint heat-haze only in the far distance — no morning mist
+  scene.fog = new THREE.Fog(PALETTE.fog, 180, 480);
 
   scene.add(makeSkyDome());
 
-  // sky bounce + green ground bounce
-  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, PALETTE.ambGround, 1.9);
+  // sky bounce + warm green ground bounce
+  const hemi = new THREE.HemisphereLight(PALETTE.ambSky, PALETTE.ambGround, 1.35);
   scene.add(hemi);
-  scene.add(new THREE.AmbientLight(new THREE.Color('#cfd8c2'), 0.55));
+  scene.add(new THREE.AmbientLight(new THREE.Color('#d8dcb8'), 0.35));
 
-  // warm sun, high and slightly behind the view so the canopy is backlit
-  const sunPos = new THREE.Vector3(45, 75, -55);
-  const sun = new THREE.DirectionalLight(PALETTE.sun, 3.0);
+  // hot sun almost overhead, slightly ahead for a shimmering backlit stream
+  const sunPos = new THREE.Vector3(30, 115, -40);
+  const sun = new THREE.DirectionalLight(PALETTE.sun, 4.4);
   sun.position.copy(sunPos);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096);

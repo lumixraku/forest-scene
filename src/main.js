@@ -10,6 +10,7 @@ import { createParticles } from './particles.js';
 import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
 import { updateWind } from './wind.js';
+import { streamCurve, levelAt } from './streamPath.js';
 
 // Deterministic randomness so the forest layout is identical on every load
 // (makes the scene stable and tunable instead of reshuffling each reload).
@@ -31,20 +32,23 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.32;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 // ---- scene & camera ----
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
-// down in the valley, a couple of metres above the stream, looking downstream
-const LOOK = new THREE.Vector3(24, 2.0, -17);
-camera.position.set(-40, 6.0, -4);
+// above a lower pool looking slightly down the terraced cascade, so the
+// green pools show between the white steps (like the reference footage)
+const camP = streamCurve.getPointAt(0.36);
+const lookP = streamCurve.getPointAt(0.58);
+const LOOK = new THREE.Vector3(lookP.x, levelAt(0.58) + 0.5, lookP.z);
+camera.position.set(camP.x - 2, levelAt(0.36) + 7.0, camP.z + 8);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
-const { sunPos } = createWorld(scene);
+createWorld(scene);
 
 // ---- valley ground + instanced grass ----
 scene.add(createGround());
@@ -57,7 +61,7 @@ createTrees(scene);
 createFoliage(scene);
 
 // ---- water + foam + boulders ----
-const stream = createStream(scene, sunPos);
+const stream = createStream(scene);
 scene.add(stream.group);
 
 // ---- dust + birds ----

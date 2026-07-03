@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
-import { streamCurve, distToStream, STREAM_HALF_WIDTH } from './streamPath.js';
+import { streamCurve, streamAt, levelAt, halfWidthAt } from './streamPath.js';
 import { makeFlowerSpikeTexture, makeMeadowFlowerTexture, makeLeafClusterTexture } from './textures.js';
 
 // Undergrowth accents: lupine-like flower spikes clustered on the banks,
@@ -36,7 +36,7 @@ export function createFoliage(scene) {
       const bx = -tan.z, bz = tan.x;
       const bl = Math.hypot(bx, bz) || 1;
       const side = Math.random() < 0.5 ? 1 : -1;
-      const off = STREAM_HALF_WIDTH + 3 + Math.random() * 9;
+      const off = halfWidthAt(t) + 3 + Math.random() * 9;
       const cx = p.x + (bx / bl) * off * side;
       const cz = p.z + (bz / bl) * off * side;
       const n = 6 + ((Math.random() * 10) | 0);
@@ -44,7 +44,7 @@ export function createFoliage(scene) {
         const x = cx + (Math.random() - 0.5) * 7;
         const z = cz + (Math.random() - 0.5) * 7;
         const h = terrainHeight(x, z);
-        if (h < 0.4) continue;
+        if (h < levelAt(streamAt(x, z).t) + 0.4) continue;
         positions.push({ x, z, h });
       }
     }
@@ -83,10 +83,10 @@ export function createFoliage(scene) {
       attempts++;
       const x = (Math.random() - 0.5) * 240;
       const z = (Math.random() - 0.5) * 240;
-      const sd = distToStream(x, z);
+      const { d: sd, t } = streamAt(x, z);
       if (Math.random() > THREE.MathUtils.clamp(1.5 - sd / 55, 0.05, 1)) continue;
       const h = terrainHeight(x, z);
-      if (h < 0.35) continue;
+      if (h < levelAt(t) + 0.35) continue;
       dummy.position.set(x, h + 0.15, z);
       dummy.rotation.set(0, Math.random() * Math.PI, 0);
       dummy.scale.setScalar(0.7 + Math.random() * 0.8);
@@ -125,10 +125,10 @@ export function createFoliage(scene) {
       attempts++;
       const x = (Math.random() - 0.5) * 270;
       const z = (Math.random() - 0.5) * 270;
-      const sd = distToStream(x, z);
-      if (sd < STREAM_HALF_WIDTH + 2 || sd > 90) continue;
+      const { d: sd, t } = streamAt(x, z);
+      if (sd < halfWidthAt(t) + 2 || sd > 90) continue;
       const h = terrainHeight(x, z);
-      if (h < 0.4) continue;
+      if (h < levelAt(t) + 0.4) continue;
       const s = 0.7 + Math.random() * 1.3;
       dummy.position.set(x, h - 0.2, z);
       dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);

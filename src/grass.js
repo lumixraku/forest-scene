@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
-import { distToStream, STREAM_HALF_WIDTH } from './streamPath.js';
+import { streamAt, levelAt } from './streamPath.js';
 
 // Dense instanced grass — the single biggest realism ingredient. Each instance
 // is a small tuft of tapered blades; a brightness gradient is baked into the
@@ -37,13 +37,13 @@ export function createGrass(scene) {
     attempts++;
     const x = (Math.random() - 0.5) * 290;
     const z = (Math.random() - 0.5) * 290;
-    const sd = distToStream(x, z);
+    const { d: sd, t } = streamAt(x, z);
 
     // dense near the stream corridor, thinning up the slopes
     const keep = THREE.MathUtils.clamp(1.55 - sd / 62, 0.12, 1);
     if (Math.random() > keep) continue;
     const h = terrainHeight(x, z);
-    if (h < 0.25) continue; // not in the water — grass runs right up to the edge
+    if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
 
     const s = 0.62 + Math.random() * 0.72;
     dummy.position.set(x, h - 0.05, z);

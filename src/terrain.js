@@ -1,33 +1,37 @@
 import * as THREE from 'three';
-import { STREAM_HALF_WIDTH, distToStream } from './streamPath.js';
+import { streamAt, levelAt, levelSmoothAt, halfWidthAt, waterLevelAt } from './streamPath.js';
 
-export const WATER_LEVEL = 0;
-
-// A grassy stream valley: the land rises gently away from the water on both
-// sides, so a ground-level camera by the stream sees sunlit slopes climbing
-// into the treeline — matching the reference footage composition.
+// A terraced brook valley: the floor follows the stream's stepped elevation
+// profile, so the whole scene descends downstream. Away from the water the
+// slopes climb with rolling knolls — no more billiard-table flatness.
 export function terrainHeight(x, z) {
-  const sd = distToStream(x, z);
+  const { d, t } = streamAt(x, z);
+  const lvlSharp = levelAt(t);
+  // terrace steps only near the water; hillsides follow the smooth grade
+  const lvl = THREE.MathUtils.lerp(lvlSharp, levelSmoothAt(t), smoothstep(8, 28, d));
 
-  // broad valley sides climbing away from the stream
-  let h = 0.9 + 15.0 * smoothstep(10, 95, sd);
+  // valley sides climbing away from the local water level
+  let h = lvl + 1.0 + 15.0 * smoothstep(10, 95, d);
 
-  // rolling irregularity, damped right next to the water so banks stay clean
-  const rough = 0.35 + 0.65 * smoothstep(7, 22, sd);
+  // fine roughness, damped right next to the water
+  const rough = 0.35 + 0.65 * smoothstep(7, 22, d);
   h += (Math.sin(x * 0.045) * 1.1 + Math.cos(z * 0.05) * 0.9 + Math.sin(x * 0.13 + z * 0.11) * 0.5) * rough;
 
-  // carve the river channel below the waterline (water shows only here)
-  const bed = STREAM_HALF_WIDTH;
-  const bank = STREAM_HALF_WIDTH + 4;
-  if (sd < bank) {
-    const k = THREE.MathUtils.clamp((bank - sd) / (bank - bed), 0, 1);
-    h = THREE.MathUtils.lerp(h, -1.7, smoothstep(0.15, 1.0, k));
+  // broad grassy knolls for real relief on the slopes
+  h += Math.sin(x * 0.021 + 1.3) * Math.cos(z * 0.024 + 0.5) * 2.6 * smoothstep(12, 34, d);
+
+  // carve the channel below the local waterline
+  const bed = halfWidthAt(t);
+  const bank = bed + 4;
+  if (d < bank) {
+    const k = THREE.MathUtils.clamp((bank - d) / (bank - bed), 0, 1);
+    h = THREE.MathUtils.lerp(h, lvlSharp - 1.6, smoothstep(0.15, 1.0, k));
   }
   return h;
 }
 
 export function isLand(x, z, margin = 0.8) {
-  return terrainHeight(x, z) > WATER_LEVEL + margin;
+  return terrainHeight(x, z) > waterLevelAt(x, z) + margin;
 }
 
 function smoothstep(a, b, x) {
