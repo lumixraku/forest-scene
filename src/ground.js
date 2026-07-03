@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { terrainHeight } from './terrain.js';
-import { distToStream, STREAM_HALF_WIDTH } from './streamPath.js';
+import { streamAt, levelAt, halfWidthAt } from './streamPath.js';
 import { makeGroundTexture } from './textures.js';
 
 // Smooth-shaded valley ground with a tiled mottled-meadow texture. Vertex
@@ -17,8 +17,8 @@ export function createGround() {
 
   const grassDark = new THREE.Color('#67793a');
   const grassLight = new THREE.Color('#93a44c');
-  const shore = new THREE.Color('#77704e');
-  const bed = new THREE.Color('#5c5844');
+  const shore = new THREE.Color('#7d7452');
+  const bed = new THREE.Color('#655e49'); // wet dark pebble bed — reads as depth through the clear water
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -26,12 +26,14 @@ export function createGround() {
     const h = terrainHeight(x, z);
     pos.setY(i, h);
 
-    const sd = distToStream(x, z);
+    const { d: sd, t } = streamAt(x, z);
+    const lvl = levelAt(t);
+    const hw = halfWidthAt(t);
     const c = new THREE.Color();
-    if (h < 0.15) {
+    if (h < lvl + 0.15) {
       c.copy(bed);
-    } else if (sd < STREAM_HALF_WIDTH + 3.5) {
-      const k = (sd - STREAM_HALF_WIDTH) / 3.5;
+    } else if (sd < hw + 3.5) {
+      const k = (sd - hw) / 3.5;
       c.copy(shore).lerp(grassDark, THREE.MathUtils.clamp(k, 0, 1));
     } else {
       const n = 0.5 + 0.5 * Math.sin(x * 0.11 + z * 0.07) * Math.cos(x * 0.05 - z * 0.13);

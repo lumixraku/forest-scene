@@ -238,6 +238,24 @@ export function makeMeadowFlowerTexture() {
   return toTexture(c);
 }
 
+// Soft irregular white ring on transparent ground — foam collar around rocks.
+export function makeFoamRingTexture() {
+  const S = 128;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+  for (let i = 0; i < 260; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 40 + (Math.random() - 0.5) * 16;
+    const x = S / 2 + Math.cos(a) * r;
+    const y = S / 2 + Math.sin(a) * r;
+    ctx.fillStyle = `rgba(255,255,252,${0.25 + Math.random() * 0.45})`;
+    ctx.beginPath();
+    ctx.arc(x, y, 1.5 + Math.random() * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return toTexture(c);
+}
+
 export function makeRockTexture() {
   const S = 128;
   const c = canvas(S, S);

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
-import { distToStream } from './streamPath.js';
+import { streamAt, levelAt } from './streamPath.js';
 import { makeLeafClusterTexture, makeBarkTexture, makeBirchTexture, makeSpruceTexture } from './textures.js';
 
 // Card-foliage forest. Deciduous trees and birches are built from a textured,
@@ -90,13 +90,13 @@ export function createTrees(scene) {
       attempts++;
       const x = (Math.random() - 0.5) * 290;
       const z = (Math.random() - 0.5) * 290;
-      const sd = distToStream(x, z);
+      const { d: sd, t } = streamAt(x, z);
       if (sd < g.minD || sd > g.maxD) continue;
       // forest thickens away from the water
       const keep = THREE.MathUtils.clamp((sd - g.minD) / 40 + 0.35, 0, 1);
       if (Math.random() > keep) continue;
       const h = terrainHeight(x, z);
-      if (h < 0.5) continue;
+      if (h < levelAt(t) + 0.5) continue;
 
       const hs = g.hRange[0] + Math.random() * (g.hRange[1] - g.hRange[0]);
       const ws = 0.85 + Math.random() * 0.3;
