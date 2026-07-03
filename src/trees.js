@@ -1,231 +1,219 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { applyWind } from './wind.js';
-import { isLand } from './terrain.js';
-import { CLEARINGS } from './terrain.js';
+import { applyWind, keepAuthoredNormals } from './wind.js';
+import { terrainHeight } from './terrain.js';
+import { distToStream } from './streamPath.js';
+import { makeLeafClusterTexture, makeBarkTexture, makeBirchTexture, makeSpruceTexture } from './textures.js';
 
-// Procedural forest with multiple species and non-uniform height scaling so the
-// canopy is staggered (错落) instead of a flat field of identical blobs.
-// Each species is a pair of InstancedMeshes (rigid trunk + swaying crown).
-export function createTrees(scene, { avoid = [] } = {}) {
-  const allAvoid = [...avoid, ...CLEARINGS.map((c) => ({ c: new THREE.Vector2(c.x, c.z), r: c.r + 1 }))];
+// Card-foliage forest. Deciduous trees and birches are built from a textured,
+// slightly bent trunk plus a crown of alpha-tested leaf-cluster cards whose
+// normals point outward from the crown centre (soft blob lighting). Spruces
+// are three crossed vertical cards with a full painted silhouette. Everything
+// is instanced per variant, and crowns get an alpha-tested depth material so
+// the sun casts dappled leaf shadows onto the grass.
+export function createTrees(scene) {
+  const barkTex = makeBarkTexture();
+  const birchTex = makeBirchTexture();
+  const leafTex = makeLeafClusterTexture({ hue: 96, sat: 44, light: 39 });
+  const birchLeafTex = makeLeafClusterTexture({ hue: 78, sat: 46, light: 45, leafW: 8, round: true });
+  const spruceTex = makeSpruceTexture();
 
-  const trunkMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#5a4630'),
-    roughness: 1,
-    flatShading: true,
-  });
-  const crownMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#4e6b2c'),
-    roughness: 0.85,
-    flatShading: true,
-  });
-  applyWind(crownMat, { strength: 0.22, freq: 1.2, heightFactor: 0.10 });
+  const trunkMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1.0 });
+  const birchTrunkMat = new THREE.MeshStandardMaterial({ map: birchTex, roughness: 0.9 });
+  const leafMat = leafMaterial(leafTex);
+  const birchLeafMat = leafMaterial(birchLeafTex);
+  const spruceMat = leafMaterial(spruceTex, { windStrength: 0.06 });
 
-  // Three distinct silhouettes break the "everything is a cauliflower" look.
-  // hRange / wRange drive per-instance non-uniform scaling for height variety.
-  const SPECIES = [
+  const groups = [
+    // deciduous — the bulk of the valley forest
+    ...range(4).map(() => ({
+      trunk: buildTrunk({ topR: 0.22, botR: 0.55, h: 9 + Math.random() * 4, bend: 0.8 }),
+      crown: buildCardCrown({ cy: 11 + Math.random() * 2.5, rx: 4.2 + Math.random() * 1.4, ry: 3.4 + Math.random() * 1.2, cards: 34, size: 4.6 }),
+      trunkMat,
+      crownMat: leafMat,
+      count: 52,
+      minD: 10, maxD: 130,
+      hRange: [0.8, 1.45],
+      tintH: 0, tintL: 0,
+      tex: leafTex,
+    })),
+    // birch — slim white trunks near the banks
+    ...range(3).map(() => ({
+      trunk: buildTrunk({ topR: 0.13, botR: 0.3, h: 11 + Math.random() * 4, bend: 1.2 }),
+      crown: buildCardCrown({ cy: 12.5 + Math.random() * 2.5, rx: 3.0 + Math.random() * 0.8, ry: 3.6 + Math.random() * 1.0, cards: 18, size: 3.8 }),
+      trunkMat: birchTrunkMat,
+      crownMat: birchLeafMat,
+      count: 34,
+      minD: 9, maxD: 45,
+      hRange: [0.85, 1.4],
+      tintH: -0.01, tintL: 0.04,
+      tex: birchLeafTex,
+    })),
+    // spruce — dark spires filling the upper slopes / background
     {
-      weight: 0.26,
-      trunk: buildTrunk(0.18, 0.45, 9),
-      crown: buildPineCrown(),
-      hRange: [0.85, 1.55],
-      wRange: [0.82, 1.05],
-      tint: { h: -0.025, s: 0.02, l: -0.06 },
-    },
-    {
-      weight: 0.44,
-      trunk: buildTrunk(0.22, 0.55, 7),
-      crown: buildOvalCrown(),
-      hRange: [0.80, 1.35],
-      wRange: [0.85, 1.18],
-      tint: { h: 0.0, s: 0.0, l: 0.0 },
-    },
-    {
-      weight: 0.30,
-      trunk: buildTrunk(0.25, 0.6, 4),
-      crown: buildBushCrown(),
-      hRange: [0.70, 1.10],
-      wRange: [0.90, 1.35],
-      tint: { h: 0.03, s: -0.04, l: 0.05 },
+      trunk: null,
+      crown: buildSpruceCards({ h: 19, w: 10 }),
+      trunkMat: null,
+      crownMat: spruceMat,
+      count: 110,
+      minD: 48, maxD: 140,
+      hRange: [0.7, 1.5],
+      tintH: 0, tintL: 0,
+      tex: spruceTex,
     },
   ];
 
-  const COUNT = 680;
-  const buckets = SPECIES.map(() => ({ matrices: [], colors: [] }));
+  // hand-placed trees framing the opening camera view from both banks
+  groups[0].fixed = [
+    { x: -26, z: -24.5, hs: 1.25 },
+    { x: -13, z: -2.5, hs: 1.35 },
+  ];
+  groups[4].fixed = [
+    { x: -30, z: -0.5, hs: 1.2 },
+    { x: -16, z: -26, hs: 1.15 },
+  ];
+
   const dummy = new THREE.Object3D();
-  const cVar = new THREE.Color();
-  let placed = 0;
-  let attempts = 0;
-
-  const cum = [];
-  let acc = 0;
-  for (const sp of SPECIES) { acc += sp.weight; cum.push(acc); }
-
-  while (placed < COUNT && attempts < COUNT * 12) {
-    attempts++;
-    const a = Math.random() * Math.PI * 2;
-    const r = 6 + Math.random() * 138;
-    const x = Math.cos(a) * r;
-    const z = Math.sin(a) * r;
-
-    let ok = true;
-    for (const av of allAvoid) {
-      const dx = x - av.c.x;
-      const dz = z - av.c.y;
-      if (dx * dx + dz * dz < av.r * av.r) { ok = false; break; }
-    }
-    if (ok && !isLand(x, z, 1.2)) ok = false; // only on the island, never in water
-    if (!ok) continue;
-
-    const rr = Math.random();
-    let idx = 0;
-    while (idx < cum.length - 1 && rr > cum[idx]) idx++;
-    const sp = SPECIES[idx];
-
-    // Non-uniform scale: stretch height independently of width for a staggered canopy.
-    const hScale = sp.hRange[0] + Math.random() * (sp.hRange[1] - sp.hRange[0]);
-    const wScale = sp.wRange[0] + Math.random() * (sp.wRange[1] - sp.wRange[0]);
-
-    dummy.position.set(x, 0, z);
-    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    dummy.scale.set(wScale, hScale, wScale);
-    dummy.updateMatrix();
-
-    cVar.copy(crownMat.color).offsetHSL(
-      sp.tint.h + (Math.random() - 0.5) * 0.04,
-      sp.tint.s + (Math.random() - 0.5) * 0.14,
-      sp.tint.l + (Math.random() - 0.5) * 0.10
-    );
-
-    buckets[idx].matrices.push(dummy.matrix.clone());
-    buckets[idx].colors.push(cVar.r, cVar.g, cVar.b);
-    placed++;
-  }
-
-  const trees = [];
   const col = new THREE.Color();
-  SPECIES.forEach((sp, i) => {
-    const b = buckets[i];
-    const n = b.matrices.length;
-    if (n === 0) return;
-    const trunks = new THREE.InstancedMesh(sp.trunk, trunkMat, n);
-    const crowns = new THREE.InstancedMesh(sp.crown, crownMat, n);
-    trunks.castShadow = true;
+
+  for (const g of groups) {
+    const matrices = [];
+    for (const f of g.fixed ?? []) {
+      dummy.position.set(f.x, terrainHeight(f.x, f.z) - 0.3, f.z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(1, f.hs, 1);
+      dummy.updateMatrix();
+      matrices.push(dummy.matrix.clone());
+    }
+    let attempts = 0;
+    while (matrices.length < g.count && attempts < g.count * 40) {
+      attempts++;
+      const x = (Math.random() - 0.5) * 290;
+      const z = (Math.random() - 0.5) * 290;
+      const sd = distToStream(x, z);
+      if (sd < g.minD || sd > g.maxD) continue;
+      // forest thickens away from the water
+      const keep = THREE.MathUtils.clamp((sd - g.minD) / 40 + 0.35, 0, 1);
+      if (Math.random() > keep) continue;
+      const h = terrainHeight(x, z);
+      if (h < 0.5) continue;
+
+      const hs = g.hRange[0] + Math.random() * (g.hRange[1] - g.hRange[0]);
+      const ws = 0.85 + Math.random() * 0.3;
+      dummy.position.set(x, h - 0.3, z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(ws, hs, ws);
+      dummy.updateMatrix();
+      matrices.push(dummy.matrix.clone());
+    }
+    const n = matrices.length;
+    if (n === 0) continue;
+
+    const crowns = new THREE.InstancedMesh(g.crown, g.crownMat, n);
     crowns.castShadow = true;
     crowns.receiveShadow = true;
-    trunks.receiveShadow = true;
-
-    for (let j = 0; j < n; j++) {
-      trunks.setMatrixAt(j, b.matrices[j]);
-      crowns.setMatrixAt(j, b.matrices[j]);
-      col.setRGB(b.colors[j * 3], b.colors[j * 3 + 1], b.colors[j * 3 + 2]);
-      crowns.setColorAt(j, col);
+    crowns.customDepthMaterial = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      map: g.tex,
+      alphaTest: 0.5,
+    });
+    for (let i = 0; i < n; i++) {
+      crowns.setMatrixAt(i, matrices[i]);
+      // near-white tint so the multiply barely darkens the leaf texture
+      col.setHSL(0.26 + g.tintH + (Math.random() - 0.5) * 0.03, 0.2, 0.68 + g.tintL + (Math.random() - 0.5) * 0.08);
+      crowns.setColorAt(i, col);
     }
-    trunks.instanceMatrix.needsUpdate = true;
     crowns.instanceMatrix.needsUpdate = true;
     if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
+    scene.add(crowns);
 
-    scene.add(trunks, crowns);
-    trees.push({ trunks, crowns, count: n });
-  });
-
-  return { trees, count: placed };
+    if (g.trunk) {
+      const trunks = new THREE.InstancedMesh(g.trunk, g.trunkMat, n);
+      trunks.castShadow = true;
+      trunks.receiveShadow = true;
+      for (let i = 0; i < n; i++) trunks.setMatrixAt(i, matrices[i]);
+      trunks.instanceMatrix.needsUpdate = true;
+      scene.add(trunks);
+    }
+  }
 }
 
-function buildTrunk(topR, botR, height) {
-  const g = new THREE.CylinderGeometry(topR, botR, height, 8, 3, false);
-  g.translate(0, height / 2, 0);
-  displaceBark(g, 0.05);
+function leafMaterial(tex, { windStrength = 0.14 } = {}) {
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex,
+    alphaTest: 0.45,
+    side: THREE.DoubleSide,
+    roughness: 0.9,
+    metalness: 0.0,
+  });
+  applyWind(mat, { strength: windStrength, freq: 1.15, heightFactor: 0.08 });
+  keepAuthoredNormals(mat);
+  return mat;
+}
+
+function buildTrunk({ topR, botR, h, bend }) {
+  const g = new THREE.CylinderGeometry(topR, botR, h, 7, 6, false);
+  g.translate(0, h / 2, 0);
+  const pos = g.attributes.position;
+  const dir = Math.random() * Math.PI * 2;
+  const bx = Math.cos(dir) * bend, bz = Math.sin(dir) * bend;
+  for (let i = 0; i < pos.count; i++) {
+    const t = pos.getY(i) / h;
+    pos.setX(i, pos.getX(i) + bx * t * t);
+    pos.setZ(i, pos.getZ(i) + bz * t * t);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
   return g;
 }
 
-// Tall, narrow, pointed — stacked cones like a classic conifer.
-function buildPineCrown() {
-  const layers = [
-    { y: 8.5, r: 3.4, h: 4.5 },
-    { y: 11.3, r: 2.6, h: 4.2 },
-    { y: 14.0, r: 1.9, h: 3.8 },
-    { y: 16.5, r: 1.1, h: 2.8 },
-  ];
-  const parts = layers.map(l => {
-    const c = new THREE.ConeGeometry(l.r, l.h, 8, 1);
-    displaceFoliage(c, 0.10);
-    c.translate(0, l.y, 0);
-    return c;
-  });
-  return mergeGeometries(parts, false);
-}
+// Crown = leaf-cluster cards scattered in an ellipsoid shell, normals outward.
+function buildCardCrown({ cy, rx, ry, cards, size }) {
+  const parts = [];
+  const centre = new THREE.Vector3(0, cy, 0);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < cards; i++) {
+    // biased to the shell so the silhouette reads, some inside for density
+    const shell = 0.55 + Math.random() * 0.45;
+    v.randomDirection();
+    const px = v.x * rx * shell;
+    const py = v.y * ry * shell;
+    const pz = v.z * rx * shell;
 
-// Medium-tall deciduous — a vertical, oval cluster sitting high on the trunk.
-function buildOvalCrown() {
-  const blobs = [
-    { x: 0,    y: 9.5,  z: 0,    r: 3.0 },
-    { x: 1.8,  y: 8.8,  z: 0.7,  r: 2.2 },
-    { x: -1.6, y: 9.2,  z: -0.8, r: 2.4 },
-    { x: 0.7,  y: 11.5, z: -1.0, r: 2.0 },
-    { x: -1.0, y: 8.0,  z: 1.6,  r: 2.0 },
-    { x: 2.0,  y: 10.7, z: -0.3, r: 1.8 },
-    { x: -2.0, y: 10.5, z: 0.5,  r: 1.8 },
-    { x: 0.3,  y: 12.3, z: 0.6,  r: 1.5 },
-  ];
-  const parts = blobs.map(b => {
-    const s = new THREE.IcosahedronGeometry(b.r, 2);
-    displaceFoliage(s, 0.16);
-    s.translate(b.x, b.y, b.z);
-    return s;
-  });
-  return mergeGeometries(parts, false);
-}
+    const s = size * (0.7 + Math.random() * 0.6);
+    const card = new THREE.PlaneGeometry(s, s);
+    const e = new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    card.rotateX(e.x); card.rotateY(e.y); card.rotateZ(e.z);
+    card.translate(centre.x + px, centre.y + py, centre.z + pz);
 
-// Short, wide, dense — a low bushy tree that fills the understory.
-function buildBushCrown() {
-  const blobs = [
-    { x: 0,    y: 5.5,  z: 0,    r: 3.2 },
-    { x: 2.5,  y: 5.2,  z: 0.8,  r: 2.3 },
-    { x: -2.2, y: 5.5,  z: -1.0, r: 2.5 },
-    { x: 0.8,  y: 7.0,  z: -1.4, r: 2.0 },
-    { x: -1.3, y: 4.6,  z: 2.2,  r: 2.0 },
-    { x: 0.3,  y: 4.2,  z: 2.4,  r: 1.9 },
-    { x: -2.6, y: 6.3,  z: 0.6,  r: 1.8 },
-    { x: 2.7,  y: 6.3,  z: -0.4, r: 1.9 },
-    { x: 1.7,  y: 4.3,  z: -1.7, r: 1.7 },
-  ];
-  const parts = blobs.map(b => {
-    const s = new THREE.IcosahedronGeometry(b.r, 2);
-    displaceFoliage(s, 0.18);
-    s.translate(b.x, b.y, b.z);
-    return s;
-  });
-  return mergeGeometries(parts, false);
-}
-
-function displaceFoliage(geo, amount) {
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const n = Math.sin(x * 2.7 + y * 1.3) * Math.cos(z * 2.3) * 0.6
-            + Math.sin(x * 5.1) * Math.cos(y * 4.7 + z * 3.9) * 0.4;
-    const f = 1 + n * amount;
-    pos.setXYZ(i, x * f, y * f, z * f);
+    // outward normals -> soft rounded crown lighting
+    const out = new THREE.Vector3(px, py, pz).normalize();
+    const n = card.attributes.normal;
+    for (let k = 0; k < n.count; k++) n.setXYZ(k, out.x, out.y, out.z);
+    parts.push(card);
   }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
+  return mergeGeometries(parts, false);
 }
 
-function displaceBark(geo, amount) {
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const a = Math.atan2(z, x);
-    const n = Math.sin(a * 9.0 + y * 2.5) * 0.7 + Math.sin(a * 17.0) * 0.3;
-    pos.setX(i, x + Math.cos(a) * n * amount);
-    pos.setZ(i, z + Math.sin(a) * n * amount);
+function buildSpruceCards({ h, w }) {
+  const parts = [];
+  for (let i = 0; i < 3; i++) {
+    const card = new THREE.PlaneGeometry(w, h);
+    card.rotateY((i / 3) * Math.PI);
+    card.translate(0, h / 2 - 0.4, 0);
+    parts.push(card);
   }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
+  const g = mergeGeometries(parts, false);
+  // upward-tilted normals so spruces catch skylight instead of going black
+  const n = g.attributes.normal;
+  const up = new THREE.Vector3();
+  for (let k = 0; k < n.count; k++) {
+    up.set(n.getX(k), 0.9, n.getZ(k)).normalize();
+    n.setXYZ(k, up.x, up.y, up.z);
+  }
+  return g;
+}
+
+function range(n) {
+  return Array.from({ length: n }, (_, i) => i);
 }

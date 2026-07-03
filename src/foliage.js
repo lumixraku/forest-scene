@@ -1,231 +1,186 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { applyWind } from './wind.js';
-import { isLand, terrainHeight, CLEARINGS } from './terrain.js';
-import { streamCurve, STREAM_HALF_WIDTH } from './streamPath.js';
+import { applyWind, keepAuthoredNormals } from './wind.js';
+import { terrainHeight } from './terrain.js';
+import { streamCurve, distToStream, STREAM_HALF_WIDTH } from './streamPath.js';
+import { makeFlowerSpikeTexture, makeMeadowFlowerTexture, makeLeafClusterTexture } from './textures.js';
 
-// Undergrowth: thousands of grass tufts, scattered bushes and a few warm
-// wildflowers concentrated in the sunlit clearing.
-export function createFoliage(scene, { clearing }) {
+// Undergrowth accents: lupine-like flower spikes clustered on the banks,
+// small yellow/white meadow flowers sprinkled through the grass, and leafy
+// card bushes filling the gaps between trunks.
+export function createFoliage(scene) {
   const dummy = new THREE.Object3D();
 
-  // --- grass tufts (triangular cones, low-poly) ---
-  const grassGeo = new THREE.ConeGeometry(0.16, 1.0, 3, 1, false);
-  grassGeo.translate(0, 0.5, 0);
-  const grassMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#7c9a4a'),
-    roughness: 1,
-    flatShading: true,
-  });
-  applyWind(grassMat, { strength: 0.6, freq: 2.0, heightFactor: 0.7 });
-  const GC = 7000;
-  const grass = new THREE.InstancedMesh(grassGeo, grassMat, GC);
-  grass.receiveShadow = true;
-  for (let i = 0; i < GC; i++) {
-    const p = scatter(clearing);
-    const s = 0.5 + Math.random() * 1.2;
-    dummy.position.set(p.x, 0, p.z);
-    dummy.rotation.set(0, Math.random() * Math.PI, 0);
-    dummy.scale.set(s, s * (0.8 + Math.random() * 0.7), s);
-    dummy.updateMatrix();
-    grass.setMatrixAt(i, dummy.matrix);
-  }
-  grass.instanceMatrix.needsUpdate = true;
-
-  // --- bushes (clustered foliage blobs) ---
-  const bushGeo = buildBushGeo();
-  const bushMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#5a7233'),
-    roughness: 0.85,
-  });
-  applyWind(bushMat, { strength: 0.18, freq: 1.3, heightFactor: 0.3 });
-  const BC = 440;
-  const bush = new THREE.InstancedMesh(bushGeo, bushMat, BC);
-  bush.castShadow = true;
-  bush.receiveShadow = true;
-  for (let i = 0; i < BC; i++) {
-    const p = scatter(clearing, 8, 110);
-    const s = 0.7 + Math.random() * 1.6;
-    dummy.position.set(p.x, s * 0.5, p.z);
-    dummy.rotation.set(0, Math.random() * Math.PI, 0);
-    dummy.scale.set(s * 1.3, s * 0.9, s * 1.3);
-    dummy.updateMatrix();
-    bush.setMatrixAt(i, dummy.matrix);
-  }
-  bush.instanceMatrix.needsUpdate = true;
-
-  // --- wildflowers (tiny warm dots for sunlit highlights) ---
-  const flowerGeo = new THREE.IcosahedronGeometry(0.12, 0);
-  const flowerMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color('#e8d36a'),
-    emissive: new THREE.Color('#5a4a10'),
-    roughness: 0.8,
-  });
-  const FC = 280;
-  const flower = new THREE.InstancedMesh(flowerGeo, flowerMat, FC);
-  for (let i = 0; i < FC; i++) {
-    const p = scatter(clearing, 3, 55);
-    dummy.position.set(p.x, 0.3 + Math.random() * 0.4, p.z);
-    dummy.scale.setScalar(0.6 + Math.random() * 1.4);
-    dummy.rotation.set(0, 0, 0);
-    dummy.updateMatrix();
-    flower.setMatrixAt(i, dummy.matrix);
-  }
-  flower.instanceMatrix.needsUpdate = true;
-
-  // --- riverbank wildflowers (clustered along both banks, near the rocks) ---
-  const rfGeo = new THREE.IcosahedronGeometry(0.45, 0);
-  const rfMat = new THREE.MeshStandardMaterial({ roughness: 0.5, flatShading: true, emissive: new THREE.Color('#6a5a18'), emissiveIntensity: 0.7 });
-  const fPalette = [
-    new THREE.Color('#f2d24a'), // yellow
-    new THREE.Color('#fbf6ea'), // white
-    new THREE.Color('#ec8fb4'), // pink
-    new THREE.Color('#e87a3a'), // orange
-    new THREE.Color('#a86bd6'), // purple
-    new THREE.Color('#e84a4a'), // red
+  // --- lupine spikes (crossed alpha cards) clustered along both banks ---
+  const spikeVariants = [
+    makeFlowerSpikeTexture('#7a4fae', '#cf95e0'), // purple
+    makeFlowerSpikeTexture('#b45a92', '#f0b6d4'), // pink
   ];
-  const rfPos = [];
-  for (let i = 0; i < 6000 && rfPos.length < 1600; i++) {
-    const t = Math.random();
-    const p = streamCurve.getPointAt(t);
-    const tan = streamCurve.getTangentAt(t);
-    const bx = -tan.z, bz = tan.x;
-    const bl = Math.hypot(bx, bz) || 1;
-    const side = Math.random() < 0.5 ? 1 : -1;
-    const off = STREAM_HALF_WIDTH + 4.5 + Math.random() * 5.5;
-    const x = p.x + (bx / bl) * off * side;
-    const z = p.z + (bz / bl) * off * side;
-    if (!isLand(x, z, 0.1)) continue;
-    rfPos.push({ x, z, y: terrainHeight(x, z), s: 1.0 + Math.random() * 1.2, col: fPalette[(Math.random() * fPalette.length) | 0] });
-  }
-  const rflower = new THREE.InstancedMesh(rfGeo, rfMat, rfPos.length);
-  for (let i = 0; i < rfPos.length; i++) {
-    const f = rfPos[i];
-    dummy.position.set(f.x, f.y + 0.8, f.z);
-    dummy.scale.setScalar(f.s);
-    dummy.rotation.set(0, Math.random() * Math.PI, 0);
-    dummy.updateMatrix();
-    rflower.setMatrixAt(i, dummy.matrix);
-    rflower.setColorAt(i, f.col);
-  }
-  rflower.instanceMatrix.needsUpdate = true;
-  if (rflower.instanceColor) rflower.instanceColor.needsUpdate = true;
+  for (const tex of spikeVariants) {
+    const geo = crossCards(1.0, 2.2);
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      alphaTest: 0.4,
+      side: THREE.DoubleSide,
+      roughness: 0.9,
+    });
+    applyWind(mat, { strength: 0.25, freq: 2.1, heightFactor: 0.5 });
+    keepAuthoredNormals(mat);
 
-  // --- bright flower meadows scattered across ALL the land (everywhere) ---
-  const mfGeo = new THREE.IcosahedronGeometry(0.4, 0);
-  const mfMat = new THREE.MeshStandardMaterial({ roughness: 0.5, flatShading: true, emissive: new THREE.Color('#6a5a18'), emissiveIntensity: 0.6 });
-  const mPalette = [
-    new THREE.Color('#f2d24a'),
-    new THREE.Color('#fbf6ea'),
-    new THREE.Color('#ec8fb4'),
-    new THREE.Color('#e87a3a'),
-    new THREE.Color('#a86bd6'),
-    new THREE.Color('#e84a4a'),
-  ];
-  const mfPos = [];
-  for (let cluster = 0; cluster < 280 && mfPos.length < 3000; cluster++) {
-    const seed = scatter(clearing, 5, 142);
-    const n = 5 + ((Math.random() * 12) | 0);
-    for (let k = 0; k < n && mfPos.length < 3000; k++) {
-      const x = seed.x + (Math.random() - 0.5) * 9;
-      const z = seed.z + (Math.random() - 0.5) * 9;
-      if (!isLand(x, z, 0.1)) continue;
-      mfPos.push({ x, z, y: terrainHeight(x, z), s: 0.8 + Math.random() * 1.3, col: mPalette[(Math.random() * mPalette.length) | 0] });
+    const positions = [];
+    // seed cluster spots on the banks, then sprinkle spikes around each
+    for (let c = 0; c < 20 && positions.length < 320; c++) {
+      const t = Math.random();
+      const p = streamCurve.getPointAt(t);
+      const tan = streamCurve.getTangentAt(t);
+      const bx = -tan.z, bz = tan.x;
+      const bl = Math.hypot(bx, bz) || 1;
+      const side = Math.random() < 0.5 ? 1 : -1;
+      const off = STREAM_HALF_WIDTH + 3 + Math.random() * 9;
+      const cx = p.x + (bx / bl) * off * side;
+      const cz = p.z + (bz / bl) * off * side;
+      const n = 6 + ((Math.random() * 10) | 0);
+      for (let k = 0; k < n && positions.length < 320; k++) {
+        const x = cx + (Math.random() - 0.5) * 7;
+        const z = cz + (Math.random() - 0.5) * 7;
+        const h = terrainHeight(x, z);
+        if (h < 0.4) continue;
+        positions.push({ x, z, h });
+      }
     }
-  }
-  const meadow = new THREE.InstancedMesh(mfGeo, mfMat, mfPos.length);
-  for (let i = 0; i < mfPos.length; i++) {
-    const f = mfPos[i];
-    dummy.position.set(f.x, f.y + 0.7, f.z);
-    dummy.scale.setScalar(f.s);
-    dummy.rotation.set(0, Math.random() * Math.PI, 0);
-    dummy.updateMatrix();
-    meadow.setMatrixAt(i, dummy.matrix);
-    meadow.setColorAt(i, f.col);
-  }
-  meadow.instanceMatrix.needsUpdate = true;
-  if (meadow.instanceColor) meadow.instanceColor.needsUpdate = true;
-
-  // --- dense bright flowers filling the sunlit clearings (light-yellow patches) ---
-  const cfGeo = new THREE.IcosahedronGeometry(0.4, 0);
-  const cfMat = new THREE.MeshStandardMaterial({ roughness: 0.5, flatShading: true, emissive: new THREE.Color('#7a6a18'), emissiveIntensity: 0.7 });
-  const cPalette = [
-    new THREE.Color('#f6e04a'),
-    new THREE.Color('#fbf2c0'),
-    new THREE.Color('#efcf5a'),
-    new THREE.Color('#fbf6ea'),
-    new THREE.Color('#ec8fb4'),
-  ];
-  const cfPos = [];
-  for (const clr of CLEARINGS) {
-    const target = 90 + ((clr.r * clr.r) / 4) | 0;
-    let got = 0;
-    for (let i = 0; i < target * 6 && got < target; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const rr = Math.sqrt(Math.random()) * (clr.r - 1);
-      const x = clr.x + Math.cos(a) * rr;
-      const z = clr.z + Math.sin(a) * rr;
-      if (!isLand(x, z, 0.1)) continue;
-      cfPos.push({ x, z, y: terrainHeight(x, z), s: 0.9 + Math.random() * 1.3, col: cPalette[(Math.random() * cPalette.length) | 0] });
-      got++;
+    const mesh = new THREE.InstancedMesh(geo, mat, positions.length);
+    mesh.receiveShadow = true;
+    for (let i = 0; i < positions.length; i++) {
+      const f = positions[i];
+      const s = 0.7 + Math.random() * 0.65;
+      dummy.position.set(f.x, f.h - 0.1, f.z);
+      dummy.rotation.set(0, Math.random() * Math.PI, 0);
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
     }
+    mesh.instanceMatrix.needsUpdate = true;
+    scene.add(mesh);
   }
-  const clearingFlowers = new THREE.InstancedMesh(cfGeo, cfMat, cfPos.length);
-  for (let i = 0; i < cfPos.length; i++) {
-    const f = cfPos[i];
-    dummy.position.set(f.x, f.y + 0.7, f.z);
-    dummy.scale.setScalar(f.s);
-    dummy.rotation.set(0, Math.random() * Math.PI, 0);
-    dummy.updateMatrix();
-    clearingFlowers.setMatrixAt(i, dummy.matrix);
-    clearingFlowers.setColorAt(i, f.col);
-  }
-  clearingFlowers.instanceMatrix.needsUpdate = true;
-  if (clearingFlowers.instanceColor) clearingFlowers.instanceColor.needsUpdate = true;
 
-  scene.add(grass, bush, flower, rflower, meadow, clearingFlowers);
-  return { grass, bush, flower, rflower, meadow, clearingFlowers };
+  // --- small meadow flowers scattered through the grass ---
+  {
+    const tex = makeMeadowFlowerTexture();
+    const geo = crossCards(0.9, 0.9, 0.45);
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      alphaTest: 0.4,
+      side: THREE.DoubleSide,
+      roughness: 0.9,
+    });
+    applyWind(mat, { strength: 0.2, freq: 2.0, heightFactor: 0.6 });
+    keepAuthoredNormals(mat);
+    const COUNT = 1400;
+    const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
+    mesh.receiveShadow = true;
+    let placed = 0, attempts = 0;
+    while (placed < COUNT && attempts < COUNT * 12) {
+      attempts++;
+      const x = (Math.random() - 0.5) * 240;
+      const z = (Math.random() - 0.5) * 240;
+      const sd = distToStream(x, z);
+      if (Math.random() > THREE.MathUtils.clamp(1.5 - sd / 55, 0.05, 1)) continue;
+      const h = terrainHeight(x, z);
+      if (h < 0.35) continue;
+      dummy.position.set(x, h + 0.15, z);
+      dummy.rotation.set(0, Math.random() * Math.PI, 0);
+      dummy.scale.setScalar(0.7 + Math.random() * 0.8);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(placed, dummy.matrix);
+      placed++;
+    }
+    mesh.count = placed;
+    mesh.instanceMatrix.needsUpdate = true;
+    scene.add(mesh);
+  }
+
+  // --- leafy card bushes between the trunks ---
+  {
+    const tex = makeLeafClusterTexture({ hue: 104, sat: 40, light: 38 });
+    const geo = bushCards();
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex,
+      alphaTest: 0.45,
+      side: THREE.DoubleSide,
+      roughness: 0.95,
+    });
+    applyWind(mat, { strength: 0.12, freq: 1.4, heightFactor: 0.25 });
+    keepAuthoredNormals(mat);
+    const COUNT = 140;
+    const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.customDepthMaterial = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      map: tex,
+      alphaTest: 0.5,
+    });
+    let placed = 0, attempts = 0;
+    while (placed < COUNT && attempts < COUNT * 30) {
+      attempts++;
+      const x = (Math.random() - 0.5) * 270;
+      const z = (Math.random() - 0.5) * 270;
+      const sd = distToStream(x, z);
+      if (sd < STREAM_HALF_WIDTH + 2 || sd > 90) continue;
+      const h = terrainHeight(x, z);
+      if (h < 0.4) continue;
+      const s = 0.7 + Math.random() * 1.3;
+      dummy.position.set(x, h - 0.2, z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(s, s * 0.8, s);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(placed, dummy.matrix);
+      placed++;
+    }
+    mesh.count = placed;
+    mesh.instanceMatrix.needsUpdate = true;
+    scene.add(mesh);
+  }
 }
 
-function scatter(clearing, minR = 2, maxR = 110) {
-  for (let a = 0; a < 12; a++) {
-    const ang = Math.random() * Math.PI * 2;
-    let p;
-    if (Math.random() < 0.5) {
-      const r = Math.random() * 16;
-      p = { x: clearing.x + Math.cos(ang) * r, z: clearing.y + Math.sin(ang) * r };
-    } else {
-      const r = minR + Math.random() * (maxR - minR);
-      p = { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
-    }
-    if (isLand(p.x, p.z, 0.6)) return p; // keep undergrowth out of the water
+// Two (or three) intersecting vertical quads, pivot at the bottom.
+function crossCards(w, h, extra = 0) {
+  const parts = [];
+  const n = extra > 0 ? 2 : 2;
+  for (let i = 0; i < n; i++) {
+    const card = new THREE.PlaneGeometry(w, h);
+    card.translate(0, h / 2, 0);
+    card.rotateY((i / n) * Math.PI);
+    parts.push(card);
   }
-  const ang = Math.random() * Math.PI * 2;
-  const r = minR + Math.random() * (maxR - minR);
-  return { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
+  const g = mergeGeometries(parts, false);
+  const nrm = g.attributes.normal;
+  const v = new THREE.Vector3();
+  for (let k = 0; k < nrm.count; k++) {
+    v.set(nrm.getX(k), 0.8, nrm.getZ(k)).normalize();
+    nrm.setXYZ(k, v.x, v.y, v.z);
+  }
+  return g;
 }
 
-function buildBushGeo() {
-  const blobs = [
-    { x: 0,     y: 0,    z: 0,    r: 0.7 },
-    { x: 0.5,   y: 0.15, z: 0.3,  r: 0.5 },
-    { x: -0.45, y: 0.2,  z: -0.2, r: 0.55 },
-    { x: 0.1,   y: 0.35, z: -0.5, r: 0.45 },
-    { x: -0.3,  y: -0.1, z: 0.45, r: 0.42 },
-    { x: 0.35,  y: 0.4,  z: 0.1,  r: 0.38 },
-  ];
-  const parts = blobs.map(b => {
-    const sph = new THREE.IcosahedronGeometry(b.r, 1);
-    const pos = sph.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-      const n = Math.sin(x * 4 + y * 3) * Math.cos(z * 4) * 0.15;
-      pos.setXYZ(i, x * (1 + n), y * (1 + n), z * (1 + n));
-    }
-    pos.needsUpdate = true;
-    sph.computeVertexNormals();
-    sph.translate(b.x, b.y, b.z);
-    return sph;
-  });
+// A little dome of leaf cards for the understory bushes.
+function bushCards() {
+  const parts = [];
+  for (let i = 0; i < 9; i++) {
+    const s = 1.6 + Math.random() * 1.2;
+    const card = new THREE.PlaneGeometry(s, s);
+    // shallow tilts so the cards read as layered leaf planes, not loose sheets
+    card.rotateX(-Math.PI / 2 + (Math.random() - 0.5) * 1.1);
+    card.rotateY(Math.random() * Math.PI);
+    card.rotateZ((Math.random() - 0.5) * 0.5);
+    const px = (Math.random() - 0.5) * 2.2;
+    const py = 0.5 + Math.random() * 1.3;
+    const pz = (Math.random() - 0.5) * 2.2;
+    card.translate(px, py, pz);
+    const out = new THREE.Vector3(px, py + 0.6, pz).normalize();
+    const n = card.attributes.normal;
+    for (let k = 0; k < n.count; k++) n.setXYZ(k, out.x, out.y, out.z);
+    parts.push(card);
+  }
   return mergeGeometries(parts, false);
 }

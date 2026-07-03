@@ -27,6 +27,28 @@ export function applyWind(material, { strength = 0.3, freq = 1.4, heightFactor =
   return material;
 }
 
+/**
+ * For double-sided foliage cards / grass blades with hand-authored normals:
+ * three.js flips the normal on backfaces, which randomly turns cards facing
+ * the camera pitch black. Restore the authored normal on both faces.
+ */
+export function keepAuthoredNormals(material) {
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader) => {
+    if (prev) prev(shader);
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+       normal = normalize( vNormal );`
+    );
+  };
+  const prevKey = material.customProgramCacheKey
+    ? material.customProgramCacheKey.bind(material)
+    : () => '';
+  material.customProgramCacheKey = () => prevKey() + '-authored-normals';
+  return material;
+}
+
 export function updateWind(time) {
   for (const m of windMaterials) {
     const u = m.userData.wind.uniforms;

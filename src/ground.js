@@ -1,8 +1,11 @@
 import * as THREE from 'three';
-import { terrainHeight, WATER_LEVEL, inClearing } from './terrain.js';
+import { terrainHeight } from './terrain.js';
+import { distToStream, STREAM_HALF_WIDTH } from './streamPath.js';
+import { makeGroundTexture } from './textures.js';
 
-// Forested land mesh built from the shared terrainHeight function. Sunlit
-// clearings render as light yellow-green meadow patches.
+// Smooth-shaded valley ground with a tiled mottled-meadow texture. Vertex
+// colors tint it: sandy at the waterline, dark soil in the channel, gently
+// varied green elsewhere (the instanced grass supplies most of the detail).
 export function createGround() {
   const size = 300;
   const seg = 220;
@@ -12,13 +15,10 @@ export function createGround() {
   const pos = geo.attributes.position;
   const colors = [];
 
-  const land = new THREE.Color('#4d5d2b');
-  const landLight = new THREE.Color('#6d8438');
-  const shore = new THREE.Color('#9a8a55');
-  const shallow = new THREE.Color('#41513f');
-  const deep = new THREE.Color('#16261f');
-  const meadow = new THREE.Color('#c6c24a');
-  const meadowBright = new THREE.Color('#e2d878');
+  const grassDark = new THREE.Color('#67793a');
+  const grassLight = new THREE.Color('#93a44c');
+  const shore = new THREE.Color('#77704e');
+  const bed = new THREE.Color('#5c5844');
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -26,32 +26,29 @@ export function createGround() {
     const h = terrainHeight(x, z);
     pos.setY(i, h);
 
+    const sd = distToStream(x, z);
     const c = new THREE.Color();
-    const clr = inClearing(x, z);
-    if (clr) {
-      const dx = x - clr.x;
-      const dz = z - clr.z;
-      const t = 1 - Math.sqrt(dx * dx + dz * dz) / clr.r; // 1 centre -> 0 edge
-      c.copy(meadow).lerp(meadowBright, Math.max(0, t) * 0.7);
-    } else if (h > 1.4) {
-      c.copy(land).lerp(landLight, Math.min(1, (h - 1.4) * 0.3));
-    } else if (h > 0) {
-      c.copy(shore);
-    } else if (h > -2) {
-      c.copy(shallow);
+    if (h < 0.15) {
+      c.copy(bed);
+    } else if (sd < STREAM_HALF_WIDTH + 3.5) {
+      const k = (sd - STREAM_HALF_WIDTH) / 3.5;
+      c.copy(shore).lerp(grassDark, THREE.MathUtils.clamp(k, 0, 1));
     } else {
-      c.copy(deep);
+      const n = 0.5 + 0.5 * Math.sin(x * 0.11 + z * 0.07) * Math.cos(x * 0.05 - z * 0.13);
+      c.copy(grassDark).lerp(grassLight, n * 0.7);
     }
-    const v = 0.9 + 0.2 * Math.random();
+    const v = 0.92 + 0.16 * Math.random();
     colors.push(c.r * v, c.g * v, c.b * v);
   }
 
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geo.computeVertexNormals();
 
+  const tex = makeGroundTexture();
+  tex.repeat.set(48, 48);
   const mat = new THREE.MeshStandardMaterial({
+    map: tex,
     vertexColors: true,
-    flatShading: true,
     roughness: 1.0,
     metalness: 0.0,
   });
@@ -59,4 +56,3 @@ export function createGround() {
   mesh.receiveShadow = true;
   return mesh;
 }
-

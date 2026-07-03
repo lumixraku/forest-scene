@@ -3,7 +3,7 @@ import * as THREE from 'three';
 // Drifting dust motes caught in the light + small birds circling the clearing.
 export function createParticles(scene, clearing) {
   // ---- dust motes ----
-  const N = 900;
+  const N = 160;
   const pos = new Float32Array(N * 3);
   const vel = new Float32Array(N * 3);
   const box = { x: 34, y: 14, z: 34, cx: clearing.x, cy: 7, cz: clearing.y };
@@ -20,13 +20,13 @@ export function createParticles(scene, clearing) {
   const dust = new THREE.Points(
     g,
     new THREE.PointsMaterial({
-      size: 0.5,
+      size: 0.35,
       map: dotTexture(),
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       color: new THREE.Color('#fff2c8'),
-      opacity: 0.85,
+      opacity: 0.35,
       sizeAttenuation: true,
     })
   );

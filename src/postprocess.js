@@ -10,9 +10,9 @@ export function createComposer(renderer, scene, camera) {
 
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(innerWidth, innerHeight),
-    0.3,  // strength
+    0.22, // strength
     0.5,  // radius
-    0.55  // threshold
+    0.8   // threshold
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
