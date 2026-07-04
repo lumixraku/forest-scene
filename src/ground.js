@@ -18,7 +18,7 @@ export function createGround() {
   const grassDark = new THREE.Color('#67793a');
   const grassLight = new THREE.Color('#93a44c');
   const shore = new THREE.Color('#7d7452');
-  const bed = new THREE.Color('#655e49'); // wet dark pebble bed — reads as depth through the clear water
+  const bed = new THREE.Color('#8a7f63'); // sunlit sandy bed — shows through the clear water
 
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);

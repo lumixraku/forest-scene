@@ -47,7 +47,7 @@ export function makeLeafClusterTexture({ hue = 96, hueVar = 20, sat = 42, light 
     });
   }
 
-  for (let i = 0; i < 170; i++) {
+  for (let i = 0; i < 180; i++) {
     const cc = centres[(Math.random() * centres.length) | 0];
     const x = cc.x + (Math.random() - 0.5) * 78;
     const y = cc.y + (Math.random() - 0.5) * 78;
@@ -55,11 +55,12 @@ export function makeLeafClusterTexture({ hue = 96, hueVar = 20, sat = 42, light 
     const dy = y - S / 2;
     if (dx * dx + dy * dy > 118 * 118) continue;
 
-    // leaves toward the upper-left of the cluster catch more light
-    const litK = THREE.MathUtils.clamp(0.5 - dx / 240 - dy / 240, 0, 1);
-    const h = hue + (Math.random() - 0.5) * hueVar;
-    const s = sat + Math.random() * 18;
-    const l = light + litK * 20 + Math.random() * 12;
+    // leaves toward the upper-left catch the sun: brighter AND yellower,
+    // shaded leaves stay deep cool green — the painterly two-tone of the ref
+    const litK = THREE.MathUtils.clamp(0.55 - dx / 280 - dy / 190, 0, 1);
+    const h = hue - litK * 26 + (Math.random() - 0.5) * hueVar;
+    const s = sat + litK * 12 + Math.random() * 14;
+    const l = light + litK * 28 + Math.random() * 10;
 
     const w = leafW * (0.7 + Math.random() * 0.6);
     const hh = w * (round ? 0.85 : 0.45);
@@ -70,9 +71,55 @@ export function makeLeafClusterTexture({ hue = 96, hueVar = 20, sat = 42, light 
     ctx.beginPath();
     ctx.ellipse(0, 0, w, hh, 0, 0, Math.PI * 2);
     ctx.fill();
+    // small sun-glint on the upper edge of lit leaves
+    if (litK > 0.4) {
+      ctx.fillStyle = `hsl(${h - 8}, ${Math.min(s + 8, 90)}%, ${Math.min(l + 13, 80)}%)`;
+      ctx.beginPath();
+      ctx.ellipse(-w * 0.15, -hh * 0.3, w * 0.55, hh * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
   return toTexture(c);
+}
+
+// Opaque mottled leaf-mass tile for the solid crown cores, so the interior
+// blobs read as dappled foliage instead of smooth plastic.
+export function makeCanopyTexture({ hue = 96 } = {}) {
+  const S = 256;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = `hsl(${hue + 8}, 40%, 30%)`;
+  ctx.fillRect(0, 0, S, S);
+  // layered leaf daubs, dark first then sunlit
+  for (let i = 0; i < 900; i++) {
+    const k = i / 900; // later daubs are the lit ones
+    const h = hue - k * 24 + (Math.random() - 0.5) * 18;
+    const s = 40 + k * 14 + Math.random() * 12;
+    const l = 28 + k * 28 + Math.random() * 10;
+    ctx.fillStyle = `hsla(${h}, ${s}%, ${l}%, ${0.5 + Math.random() * 0.5})`;
+    const w = 7 + Math.random() * 9;
+    const x = Math.random() * S;
+    const y = Math.random() * S;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.random() * Math.PI);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w, w * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // wrap edges roughly for tiling
+    if (x < 20 || x > S - 20 || y < 20 || y > S - 20) {
+      ctx.save();
+      ctx.translate((x + S / 2) % S, (y + S / 2) % S);
+      ctx.rotate(Math.random() * Math.PI);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w, w * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  return toTexture(c, { repeat: true });
 }
 
 // Full spruce silhouette — drawn once, used on 3 crossed vertical cards.
@@ -238,22 +285,71 @@ export function makeMeadowFlowerTexture() {
   return toTexture(c);
 }
 
-// Soft irregular white ring on transparent ground — foam collar around rocks.
-export function makeFoamRingTexture() {
-  const S = 128;
-  const c = canvas(S, S);
+// White wake around an emergent rock: a foam bow on the upstream side (left)
+// breaking into streaks that trail off downstream (+x = downstream).
+export function makeFoamStreakTexture() {
+  const W = 256, H = 128;
+  const c = canvas(W, H);
   const ctx = c.getContext('2d');
+  const cx = 70, cy = H / 2;
+
+  // upstream bow — dense broken froth wrapping the left side
   for (let i = 0; i < 260; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const r = 40 + (Math.random() - 0.5) * 16;
-    const x = S / 2 + Math.cos(a) * r;
-    const y = S / 2 + Math.sin(a) * r;
-    ctx.fillStyle = `rgba(255,255,252,${0.25 + Math.random() * 0.45})`;
+    const a = Math.PI * 0.5 + Math.random() * Math.PI;
+    const r = 34 + (Math.random() - 0.5) * 16;
+    const x = cx + Math.cos(a) * r * 1.05;
+    const y = cy + Math.sin(a) * r * 0.8;
+    ctx.fillStyle = `rgba(255,255,252,${0.28 + Math.random() * 0.5})`;
     ctx.beginPath();
-    ctx.arc(x, y, 1.5 + Math.random() * 4, 0, Math.PI * 2);
+    ctx.arc(x, y, 1.5 + Math.random() * 4.5, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  // foam trails fading downstream
+  for (let i = 0; i < 90; i++) {
+    const y = cy + (Math.random() - 0.5) * 62;
+    const x0 = cx + Math.random() * 30;
+    const len = 30 + Math.random() * 130;
+    const grad = ctx.createLinearGradient(x0, 0, x0 + len, 0);
+    grad.addColorStop(0, `rgba(255,255,252,${0.22 + Math.random() * 0.35})`);
+    grad.addColorStop(1, 'rgba(255,255,252,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 1.5 + Math.random() * 3;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.quadraticCurveTo(x0 + len * 0.5, y + (Math.random() - 0.5) * 8, x0 + len, y + (Math.random() - 0.5) * 14);
+    ctx.stroke();
+  }
   return toTexture(c);
+}
+
+// Sunlit sandy streambed strewn with pale pebbles — what you see THROUGH the
+// clear water, so it's kept warm and bright like the reference footage.
+export function makeBedTexture() {
+  const S = 256;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#8f8468';
+  ctx.fillRect(0, 0, S, S);
+  const tones = ['#a99d7f', '#7c745c', '#b5ab8e', '#94886a', '#6f6852'];
+  for (let i = 0; i < 650; i++) {
+    const x = Math.random() * S;
+    const y = Math.random() * S;
+    const r = 2 + Math.random() * 7;
+    ctx.globalAlpha = 0.5 + Math.random() * 0.5;
+    ctx.fillStyle = tones[(Math.random() * tones.length) | 0];
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * (0.6 + Math.random() * 0.4), Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+    // pebble top-light
+    ctx.globalAlpha *= 0.45;
+    ctx.fillStyle = '#cfc5a8';
+    ctx.beginPath();
+    ctx.ellipse(x - r * 0.2, y - r * 0.25, r * 0.45, r * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  return toTexture(c, { repeat: true });
 }
 
 export function makeRockTexture() {
