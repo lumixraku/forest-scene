@@ -48,11 +48,11 @@ camera.position.set(camP.x - 2, levelAt(0.36) + 7.0, camP.z + 8);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
-createWorld(scene);
+const world = createWorld(scene);
 
 // ---- valley ground + instanced grass ----
 scene.add(createGround());
-createGrass(scene);
+const grass = createGrass(scene);
 
 // ---- forest ----
 createTrees(scene);
@@ -123,6 +123,8 @@ function animate() {
   stream.update(dt);
   particles.update(dt, t);
   controls.update();
+  world.updateShadows(camera);
+  grass.update(camera);
   composer.render();
   requestAnimationFrame(animate);
 }

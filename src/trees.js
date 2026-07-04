@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
-import { streamAt, levelAt } from './streamPath.js';
+import { streamAt, levelAt, streamCurve } from './streamPath.js';
 import { makeLeafClusterTexture, makeCanopyTexture, makeBarkTexture, makeBirchTexture, makeSpruceTexture } from './textures.js';
 
 // Volumetric card-foliage forest. Each crown is built from three layers so it
@@ -111,11 +111,18 @@ export function createTrees(scene) {
       dummy.updateMatrix();
       matrices.push(dummy.matrix.clone());
     }
+    // keep the opening camera position clear so a random tree never spawns
+    // right in front of the initial view (layout reshuffles whenever any
+    // upstream module changes its Math.random consumption)
+    const camP = streamCurve.getPointAt(0.36);
+    const camX = camP.x - 2, camZ = camP.z + 8;
+
     let attempts = 0;
     while (matrices.length < g.count && attempts < g.count * 40) {
       attempts++;
       const x = (Math.random() - 0.5) * 290;
       const z = (Math.random() - 0.5) * 290;
+      if ((x - camX) * (x - camX) + (z - camZ) * (z - camZ) < 15 * 15) continue;
       const { d: sd, t } = streamAt(x, z);
       if (sd < g.minD || sd > g.maxD) continue;
       // forest thickens away from the water
@@ -259,7 +266,10 @@ function buildTieredTree({ h, tiers, r0 }) {
     }
 
     // lumpy blob — the leafy mass of the tier, tilted a touch off-level
-    const blob = new THREE.IcosahedronGeometry(1, 4);
+    // (detail 3: detail 4 looked marginally smoother but cost ~4x the
+    // triangles across 200+ instanced trees — the mottled canopy texture
+    // hides the facets well enough)
+    const blob = new THREE.IcosahedronGeometry(1, 3);
     const bp = blob.attributes.position;
     for (let vi = 0; vi < bp.count; vi++) {
       const x = bp.getX(vi), yy = bp.getY(vi), z = bp.getZ(vi);

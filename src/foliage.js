@@ -3,13 +3,100 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
 import { streamCurve, streamAt, levelAt, halfWidthAt } from './streamPath.js';
-import { makeFlowerSpikeTexture, makeMeadowFlowerTexture, makeLeafClusterTexture } from './textures.js';
+import {
+  makeFlowerSpikeTexture, makeMeadowFlowerTexture, makeLeafClusterTexture,
+  makeFlowerBushTexture, makeSedgeTexture,
+} from './textures.js';
 
 // Undergrowth accents: lupine-like flower spikes clustered on the banks,
 // small yellow/white meadow flowers sprinkled through the grass, and leafy
 // card bushes filling the gaps between trunks.
 export function createFoliage(scene) {
   const dummy = new THREE.Object3D();
+
+  // Walk outward from the channel until we hit dry land — the terrain is
+  // carved below the waterline near the stream, so the true shoreline can't
+  // be derived from halfWidthAt alone.
+  function bankPoint(t, side, extra = 0) {
+    const p = streamCurve.getPointAt(t);
+    const tan = streamCurve.getTangentAt(t);
+    const bx = -tan.z, bz = tan.x;
+    const bl = Math.hypot(bx, bz) || 1;
+    const hw = halfWidthAt(t);
+    const lvl = levelAt(t);
+    for (let off = hw; off < hw + 9; off += 0.4) {
+      const x = p.x + (bx / bl) * off * side;
+      const z = p.z + (bz / bl) * off * side;
+      if (terrainHeight(x, z) > lvl + 0.12) {
+        const o = off + extra;
+        return { x: p.x + (bx / bl) * o * side, z: p.z + (bz / bl) * o * side };
+      }
+    }
+    return null;
+  }
+
+  // --- bank garden: patches of flower bushes and sedge along the waterline,
+  // clustered by species so the banks read as arranged drifts, not confetti ---
+  {
+    const species = [
+      { tex: makeFlowerBushTexture('#d13d9e'), geo: bushCards(), s: [0.4, 0.75], bush: true },
+      { tex: makeFlowerBushTexture('#8a5ad2'), geo: bushCards(), s: [0.38, 0.7], bush: true },
+      { tex: makeFlowerBushTexture('#e0669c'), geo: bushCards(), s: [0.35, 0.65], bush: true },
+      { tex: makeSedgeTexture(), geo: crossCards(2.0, 1.6), s: [0.8, 1.6], bush: false },
+    ];
+    const placements = species.map(() => []);
+
+    const CLUSTERS = 64;
+    for (let c = 0; c < CLUSTERS; c++) {
+      const t = Math.random();
+      const side = Math.random() < 0.5 ? 1 : -1;
+      // sedge hugs the waterline; flower bushes sit a step up the bank
+      const si = Math.random() < 0.45 ? 3 : (Math.random() * 3) | 0;
+      const centre = bankPoint(t, side, si === 3 ? Math.random() * 0.8 : 0.6 + Math.random() * 2.2);
+      if (!centre) continue;
+      const n = 2 + ((Math.random() * 3) | 0);
+      for (let k = 0; k < n; k++) {
+        const x = centre.x + (Math.random() - 0.5) * 3.2;
+        const z = centre.z + (Math.random() - 0.5) * 3.2;
+        const h = terrainHeight(x, z);
+        if (h < levelAt(streamAt(x, z).t) + 0.1) continue;
+        placements[si].push({ x, z, h });
+      }
+    }
+
+    species.forEach((sp, si) => {
+      const list = placements[si];
+      if (!list.length) return;
+      const mat = new THREE.MeshStandardMaterial({
+        map: sp.tex,
+        alphaTest: 0.4,
+        side: THREE.DoubleSide,
+        roughness: 0.95,
+      });
+      applyWind(mat, { strength: sp.bush ? 0.1 : 0.22, freq: 1.8, heightFactor: 0.4 });
+      keepAuthoredNormals(mat);
+      const mesh = new THREE.InstancedMesh(sp.geo, mat, list.length);
+      mesh.receiveShadow = true;
+      if (sp.bush) {
+        mesh.castShadow = true;
+        mesh.customDepthMaterial = new THREE.MeshDepthMaterial({
+          depthPacking: THREE.RGBADepthPacking,
+          map: sp.tex,
+          alphaTest: 0.5,
+        });
+      }
+      list.forEach((f, i) => {
+        const s = sp.s[0] + Math.random() * (sp.s[1] - sp.s[0]);
+        dummy.position.set(f.x, f.h - (sp.bush ? 0.15 : 0.05), f.z);
+        dummy.rotation.set((Math.random() - 0.5) * 0.16, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.16);
+        dummy.scale.set(s, s * (0.85 + Math.random() * 0.3), s);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      scene.add(mesh);
+    });
+  }
 
   // --- lupine spikes (crossed alpha cards) clustered along both banks ---
   const spikeVariants = [
@@ -36,7 +123,7 @@ export function createFoliage(scene) {
       const bx = -tan.z, bz = tan.x;
       const bl = Math.hypot(bx, bz) || 1;
       const side = Math.random() < 0.5 ? 1 : -1;
-      const off = halfWidthAt(t) + 3 + Math.random() * 9;
+      const off = halfWidthAt(t) + 2 + Math.random() * 6.5;
       const cx = p.x + (bx / bl) * off * side;
       const cz = p.z + (bz / bl) * off * side;
       const n = 6 + ((Math.random() * 10) | 0);

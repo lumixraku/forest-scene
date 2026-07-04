@@ -28,8 +28,11 @@ export function createWorld(scene) {
   const sun = new THREE.DirectionalLight(PALETTE.sun, 4.4);
   sun.position.copy(sunPos);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(3072, 3072);
-  const s = 95;
+  sun.shadow.mapSize.set(2048, 2048);
+  // tight box that follows the camera (see updateShadows) instead of a huge
+  // static one covering the whole field — better texel density at half the
+  // map size, and the shadow pass rasterizes far less geometry
+  const s = 70;
   sun.shadow.camera.left = -s;
   sun.shadow.camera.right = s;
   sun.shadow.camera.top = s;
@@ -41,7 +44,17 @@ export function createWorld(scene) {
   scene.add(sun);
   scene.add(sun.target);
 
-  return { sun, sunPos, hemi, PALETTE };
+  // keep the shadow box centred on the camera, snapped to a coarse grid so
+  // the shadow texels don't shimmer as the camera glides
+  const SNAP = 4;
+  function updateShadows(camera) {
+    const tx = Math.round(camera.position.x / SNAP) * SNAP;
+    const tz = Math.round(camera.position.z / SNAP) * SNAP;
+    sun.target.position.set(tx, 0, tz);
+    sun.position.set(tx + sunPos.x, sunPos.y, tz + sunPos.z);
+  }
+
+  return { sun, sunPos, hemi, PALETTE, updateShadows };
 }
 
 function makeSkyDome() {

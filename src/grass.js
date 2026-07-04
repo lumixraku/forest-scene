@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
-import { streamAt, levelAt } from './streamPath.js';
+import { streamAt, levelAt, halfWidthAt } from './streamPath.js';
 
 // Dense instanced grass — the single biggest realism ingredient. Each instance
 // is a small tuft of tapered blades; a brightness gradient is baked into the
@@ -10,6 +10,12 @@ import { streamAt, levelAt } from './streamPath.js';
 // hue between deep green and sunlit yellow-green. Normals are forced upward
 // so the meadow shades like a continuous sunlit surface instead of a mass of
 // dark random facets.
+//
+// The field is split into a grid of chunks, one InstancedMesh each:
+//  - chunks outside the camera frustum are culled by three.js (a single
+//    field-sized InstancedMesh always drew all 60k tufts)
+//  - distant chunks thin out by truncating instanceCount — placement order
+//    is random, so a lower count IS a uniform density reduction
 export function createGrass(scene) {
   const geo = buildTuftGeometry();
 
@@ -23,48 +29,92 @@ export function createGrass(scene) {
   keepAuthoredNormals(mat);
 
   const COUNT = 60000;
-  const grass = new THREE.InstancedMesh(geo, mat, COUNT);
-  grass.receiveShadow = true;
+  const FIELD = 290;
+  const GRID = 8; // 8x8 chunks
+  const CHUNK = FIELD / GRID;
 
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
   const deep = new THREE.Color('#48661f');
   const sunlit = new THREE.Color('#9cb149');
 
+  // bucket the placements per chunk first, then build one mesh per chunk
+  const buckets = Array.from({ length: GRID * GRID }, () => ({ mats: [], cols: [] }));
   let placed = 0;
   let attempts = 0;
   while (placed < COUNT && attempts < COUNT * 14) {
     attempts++;
-    const x = (Math.random() - 0.5) * 290;
-    const z = (Math.random() - 0.5) * 290;
+    const x = (Math.random() - 0.5) * FIELD;
+    const z = (Math.random() - 0.5) * FIELD;
     const { d: sd, t } = streamAt(x, z);
 
-    // dense near the stream corridor, thinning up the slopes
-    const keep = THREE.MathUtils.clamp(1.55 - sd / 62, 0.12, 1);
+    // dense near the stream corridor, thinning up the slopes — but with a
+    // sparse band along the waterline itself, so the bank plants (flower
+    // bushes, sedge, spikes) read instead of a wall of tall grass
+    const bankD = sd - halfWidthAt(t);
+    const bankK = 0.38 + 0.62 * THREE.MathUtils.smoothstep(bankD, 1.5, 9);
+    const keep = THREE.MathUtils.clamp(1.55 - sd / 62, 0.12, 1) * bankK;
     if (Math.random() > keep) continue;
     const h = terrainHeight(x, z);
     if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
 
-    const s = 0.62 + Math.random() * 0.72;
+    // shorter tufts near the water's edge
+    const s = (0.62 + Math.random() * 0.72) * (0.7 + 0.3 * THREE.MathUtils.smoothstep(bankD, 0, 8));
     dummy.position.set(x, h - 0.05, z);
     dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
     dummy.scale.set(s, s * (0.8 + Math.random() * 0.6), s);
     dummy.updateMatrix();
-    grass.setMatrixAt(placed, dummy.matrix);
 
     // sunnier (yellower) tufts on open slopes, deeper green near the water
     const sunK = THREE.MathUtils.clamp(sd / 45, 0, 1) * 0.5 + Math.random() * 0.5;
     col.copy(deep).lerp(sunlit, sunK);
     col.offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.06);
-    grass.setColorAt(placed, col);
+
+    const cx = Math.min(GRID - 1, Math.floor((x + FIELD / 2) / CHUNK));
+    const cz = Math.min(GRID - 1, Math.floor((z + FIELD / 2) / CHUNK));
+    const bucket = buckets[cz * GRID + cx];
+    bucket.mats.push(dummy.matrix.clone());
+    bucket.cols.push(col.clone());
     placed++;
   }
-  grass.count = placed;
-  grass.instanceMatrix.needsUpdate = true;
-  if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
 
-  scene.add(grass);
-  return grass;
+  const chunks = [];
+  buckets.forEach((bucket, bi) => {
+    const n = bucket.mats.length;
+    if (n === 0) return;
+    const mesh = new THREE.InstancedMesh(geo, mat, n);
+    mesh.receiveShadow = true;
+    for (let i = 0; i < n; i++) {
+      mesh.setMatrixAt(i, bucket.mats[i]);
+      mesh.setColorAt(i, bucket.cols[i]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere(); // instance-aware bounds -> real frustum culling
+    scene.add(mesh);
+
+    const cx = (bi % GRID + 0.5) * CHUNK - FIELD / 2;
+    const cz = (Math.floor(bi / GRID) + 0.5) * CHUNK - FIELD / 2;
+    chunks.push({ mesh, full: n, centre: new THREE.Vector2(cx, cz) });
+  });
+
+  // distance-based density: full within 60m of the camera, fading to 15%
+  // far out where a tuft is subpixel anyway. Re-evaluated only after the
+  // camera has actually moved.
+  const lastCam = new THREE.Vector2(Infinity, Infinity);
+  const camXZ = new THREE.Vector2();
+  return {
+    update(camera) {
+      camXZ.set(camera.position.x, camera.position.z);
+      if (camXZ.distanceToSquared(lastCam) < 2.25) return;
+      lastCam.copy(camXZ);
+      for (const c of chunks) {
+        const dist = c.centre.distanceTo(camXZ);
+        const f = THREE.MathUtils.clamp(1 - (dist - 60) / 130, 0.15, 1);
+        c.mesh.count = Math.ceil(c.full * f);
+      }
+    },
+  };
 }
 
 // One tuft = 6 tapered two-segment blades leaning outward.
