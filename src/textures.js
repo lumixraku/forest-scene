@@ -83,6 +83,87 @@ export function makeLeafClusterTexture({ hue = 96, hueVar = 20, sat = 42, light 
   return toTexture(c);
 }
 
+// Leafy mound studded with five-petal blossoms — the vivid flower bushes
+// hugging the banks in the reference footage.
+export function makeFlowerBushTexture(petal = '#d13d9e', centre = '#f6e08a') {
+  const S = 256;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+
+  // dark leafy base cluster
+  for (let i = 0; i < 130; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * 105;
+    const x = S / 2 + Math.cos(a) * r;
+    const y = S / 2 + Math.sin(a) * r * 0.9;
+    const litK = THREE.MathUtils.clamp(0.5 - (y - S / 2) / 200, 0, 1);
+    ctx.fillStyle = `hsl(${112 + (Math.random() - 0.5) * 20}, ${40 + Math.random() * 14}%, ${24 + litK * 22 + Math.random() * 8}%)`;
+    const w = 9 + Math.random() * 8;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.random() * Math.PI);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w, w * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // blossoms: five petals + a warm centre dot
+  const petalCol = new THREE.Color(petal);
+  for (let i = 0; i < 26; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * 92;
+    const x = S / 2 + Math.cos(a) * r;
+    const y = S / 2 + Math.sin(a) * r * 0.9;
+    const pr = 4.5 + Math.random() * 4;
+    const tone = petalCol.clone().offsetHSL((Math.random() - 0.5) * 0.03, 0, (Math.random() - 0.5) * 0.12 + 0.04);
+    ctx.fillStyle = `#${tone.getHexString()}`;
+    for (let p = 0; p < 5; p++) {
+      const pa = (p / 5) * Math.PI * 2 + Math.random() * 0.3;
+      ctx.beginPath();
+      ctx.ellipse(x + Math.cos(pa) * pr, y + Math.sin(pa) * pr, pr * 0.75, pr * 0.55, pa, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = centre;
+    ctx.beginPath();
+    ctx.arc(x, y, pr * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  return toTexture(c);
+}
+
+// Fan of slender arcing sedge blades, dark green with pale tips — the grassy
+// clumps overhanging the waterline.
+export function makeSedgeTexture() {
+  const S = 256;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+  const baseX = S / 2, baseY = S - 6;
+  for (let i = 0; i < 46; i++) {
+    const lean = (Math.random() - 0.5) * 1.7;
+    const len = 150 + Math.random() * 95;
+    const hue = 100 + (Math.random() - 0.5) * 24;
+    const light = 20 + Math.random() * 12;
+    // draw each blade as tapering segments, lightening toward the tip
+    const STEPS = 8;
+    let px = baseX + (Math.random() - 0.5) * 26, py = baseY;
+    for (let sgm = 0; sgm < STEPS; sgm++) {
+      const k = sgm / STEPS;
+      const nx = baseX + Math.sin(lean * (k + 1 / STEPS)) * len * (k + 1 / STEPS);
+      const ny = baseY - Math.cos(lean * (k + 1 / STEPS) * 0.6) * len * (k + 1 / STEPS);
+      ctx.strokeStyle = `hsl(${hue}, ${38 + Math.random() * 10}%, ${light + k * 16}%)`;
+      ctx.lineWidth = (1 - k) * 4.5 + 0.8;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(nx, ny);
+      ctx.stroke();
+      px = nx; py = ny;
+    }
+  }
+  return toTexture(c);
+}
+
 // Opaque mottled leaf-mass tile for the solid crown cores, so the interior
 // blobs read as dappled foliage instead of smooth plastic.
 export function makeCanopyTexture({ hue = 96 } = {}) {
