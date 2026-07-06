@@ -1,486 +1,456 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { applyWind, keepAuthoredNormals } from './wind.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { applyCardWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, streamCurve } from './streamPath.js';
-import { makeLeafClusterTexture, makeCanopyTexture, makeBarkTexture, makeBirchTexture, makeSpruceTexture } from './textures.js';
+import {
+  makePagodaBranchTexture, makeLeafBlobTexture, makeNeedleBranchTexture,
+  makeSpruceTopTexture, makeBarkTexture, makeBirchTexture,
+} from './textures.js';
 
-// Volumetric card-foliage forest. Each crown is built from three layers so it
-// reads as a solid 3D canopy instead of floating discs:
-//   1. a dark displaced "core" blob — gaps show shaded interior, not sky
-//   2. dozens of SMALL leaf-cluster cards grouped into branch clumps, each
-//      oriented tangent to the crown ellipsoid (never face-on plates)
-//   3. a bent textured trunk with a few branches reaching into the crown
-// Everything is InstancedMesh per variant (trunk + core + cards share the
-// same instance matrices), so the whole forest is a handful of draw calls.
+// Old-growth conifer forest, built the way the reference scene does it:
+// every BRANCH is its own instance of a small crossed drooping card whose
+// texture is a fully drawn branch (bezier stem + side twigs + hundreds of
+// individual needle strokes, alpha-cut). Each tree is tiers of whorled
+// branch instances — length shrinking and colour lightening toward the top —
+// capped with crossed spire cards. Trunks are thick noise-displaced
+// cylinders with a root flare. Five species:
+//   pagoda     — 小叶榄仁, the signature valley tree: pale straight trunk,
+//                flat umbrella tiers of near-horizontal leafy branches
+//   pine       — mid-ground, full crown from near the ground
+//   high pine  — bare lower trunk with dead sticks, crown held high
+//   broadleaf  — pale bent trunks by the banks, crowns of leafy blobs
+//   spruce     — darkest, tallest spires filling the background slopes
+// Everything is InstancedMesh — 2-4 draw calls per species.
 export function createTrees(scene) {
-  const barkTex = makeBarkTexture();
-  const birchTex = makeBirchTexture();
-  const leafTex = makeLeafClusterTexture({ hue: 96, sat: 46, light: 42 });
-  const birchLeafTex = makeLeafClusterTexture({ hue: 78, sat: 48, light: 48, leafW: 8, round: true });
-  const spruceTex = makeSpruceTexture();
+  const pagodaBark = makeBarkTexture({ base: '#8a8172', crack: 'rgba(34,30,24,1)', ridge: 'rgba(202,194,176,1)', knots: false });
+  const pineBark = makeBarkTexture({ base: '#4f4338', crack: 'rgba(22,18,14,1)', ridge: 'rgba(120,104,84,1)' });
+  const highBark = makeBarkTexture({ base: '#54453a', crack: 'rgba(28,20,14,1)', ridge: 'rgba(140,110,80,1)', knots: false });
+  const spruceBark = makeBarkTexture({ base: '#453a32', crack: 'rgba(18,14,10,1)', ridge: 'rgba(108,92,74,1)' });
+  const birchBark = makeBirchTexture();
 
-  const trunkMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1.0 });
-  const birchTrunkMat = new THREE.MeshStandardMaterial({ map: birchTex, roughness: 0.9 });
-  const leafMat = leafMaterial(leafTex);
-  const birchLeafMat = leafMaterial(birchLeafTex);
-  const spruceMat = leafMaterial(spruceTex, { windStrength: 0.06, grade: false });
-  const canopyTex = makeCanopyTexture({ hue: 96 });
-  canopyTex.repeat.set(2, 2);
-  const coreMat = new THREE.MeshStandardMaterial({ map: canopyTex, roughness: 1.0, metalness: 0.0 });
-  applyWind(coreMat, { strength: 0.1, freq: 1.15, heightFactor: 0.06 });
-  applyCanopyGrade(coreMat);
+  const pineCols = ['#26402a', '#3c5a33', '#5d7a44'];
+  const highCols = ['#2c4a24', '#48662f', '#74904a'];
+  const darkCols = ['#1f3826', '#33512f', '#4f6e3e'];
+  const pineTex = makeNeedleBranchTexture(pineCols);
+  const pineTopTex = makeSpruceTopTexture(pineCols);
+  const highTex = makeNeedleBranchTexture(highCols);
+  const highTopTex = makeSpruceTopTexture(highCols);
+  const darkTex = makeNeedleBranchTexture(darkCols);
+  const darkTopTex = makeSpruceTopTexture(darkCols);
+  const leafTex = makeLeafBlobTexture(['#476b33', '#6f8d47', '#8fae55']);
+  const pagodaTex = makePagodaBranchTexture();
 
-  const groups = [
-    // tiered pagoda canopy (小叶榄仁-style) — the signature valley tree:
-    // straight trunk, whorls of horizontal branches, flat umbrella layers
-    ...range(4).map(() => {
-      const h = 11 + Math.random() * 5;
-      const tiers = 4 + ((Math.random() * 2) | 0);
-      const r0 = 3.8 + Math.random() * 1.6;
-      const built = buildTieredTree({ h, tiers, r0 });
-      return {
-        trunk: built.trunk,
-        crown: built.crown,
-        core: built.core,
-        trunkMat,
-        crownMat: leafMat,
-        count: 52,
-        minD: 10, maxD: 130,
-        hRange: [0.8, 1.45],
-        tintH: 0, tintL: 0,
-        coreCol: '#c2cb96',
-        tex: leafTex,
-      };
-    }),
-    // birch — slim white trunks near the banks
-    ...range(3).map(() => {
-      const cy = 12.5 + Math.random() * 2.5;
-      const rx = 3.0 + Math.random() * 0.8;
-      const ry = 3.6 + Math.random() * 1.0;
-      return {
-        trunk: buildTrunk({ topR: 0.13, botR: 0.3, h: 11 + Math.random() * 4, bend: 1.2, branches: 0, crownY: cy }),
-        crown: buildLeafCrown({ cy, rx, ry, clumps: 16, size: 2.0 }),
-        core: buildCoreBlob({ cy, rx: rx * 0.58, ry: ry * 0.58 }),
-        trunkMat: birchTrunkMat,
-        crownMat: birchLeafMat,
-        count: 34,
-        minD: 9, maxD: 45,
-        hRange: [0.85, 1.4],
-        tintH: -0.01, tintL: 0.04,
-        coreCol: '#bfc490',
-        tex: birchLeafTex,
-      };
-    }),
-    // spruce — dark spires filling the upper slopes / background
-    {
-      trunk: null,
-      crown: buildSpruceCards({ h: 19, w: 10 }),
-      core: buildSpruceCore({ h: 19, w: 10 }),
-      trunkMat: null,
-      crownMat: spruceMat,
-      count: 110,
-      minD: 48, maxD: 140,
-      hRange: [0.7, 1.5],
-      tintH: 0, tintL: 0,
-      coreCol: '#26361a',
-      tex: spruceTex,
-    },
-  ];
+  // one shared drooping crossed-card geometry for every needle branch
+  const branchGeo = makeBranchCardGeo({ droop: 0.22, cross: 0.62 });
 
-  // hand-placed trees framing the opening camera view from both banks
-  groups[0].fixed = [
-    { x: -26, z: -24.5, hs: 1.25 },
-    { x: -13, z: -2.5, hs: 1.35 },
-  ];
-  groups[4].fixed = [
-    { x: -30, z: -0.5, hs: 1.2 },
-    { x: -16, z: -26, hs: 1.15 },
-  ];
+  // ---- pagoda (小叶榄仁) — flat umbrella tiers, the signature tree ----
+  const pagodas = placeSpecies({
+    count: 70, minD: 10, maxD: 100, sRange: [0.9, 1.4],
+    // hand-placed trees framing the opening camera view from both banks
+    fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
+  });
+  addTrunks(scene, pagodas, makeTrunkGeo({ topR: 0.13, botR: 0.4, h: 11.8, flare: 3.4 }), pagodaBark);
+  scatterBranches(scene, pagodas, makePagodaFanGeo(), pagodaTex, {
+    tiers: 5, branches: 7,
+    crownBase: 5.2, crownTop: 11.4,
+    lenBase: 4.2, lenTop: 2.0,
+    droopBase: -0.06, droopJitter: 0.1,
+    yJitter: 0.2, tilt: 0.22, yScale: 0.7, fan: true,
+    hue: 0.24, light: 0.44,
+  });
 
-  const dummy = new THREE.Object3D();
-  const col = new THREE.Color();
-  const coreColVar = new THREE.Color();
+  // ---- pine — mid-ground conifer, full crown from near the ground ----
+  const pines = placeSpecies({ count: 90, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
+  addTrunks(scene, pines, makeTrunkGeo({ topR: 0.2, botR: 0.72, h: 12, flare: 4.2 }), pineBark);
+  scatterBranches(scene, pines, branchGeo, pineTex, {
+    tiers: 12, branches: 10,
+    crownBase: 2.8, crownTop: 11.6,
+    lenBase: 2.6, lenTop: 0.55,
+    droopBase: 0.5, droopJitter: 0.24,
+    hue: 0.3, light: 0.36,
+  });
+  addSpires(scene, pines, pineTopTex, { crownTop: 11.6, hue: 0.3, light: 0.38 });
 
-  for (const g of groups) {
-    const matrices = [];
-    for (const f of g.fixed ?? []) {
-      dummy.position.set(f.x, terrainHeight(f.x, f.z) - 0.3, f.z);
-      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-      dummy.scale.set(1, f.hs, 1);
-      dummy.updateMatrix();
-      matrices.push(dummy.matrix.clone());
-    }
-    // keep the opening camera position clear so a random tree never spawns
-    // right in front of the initial view (layout reshuffles whenever any
-    // upstream module changes its Math.random consumption)
-    const camP = streamCurve.getPointAt(0.36);
-    const camX = camP.x - 2, camZ = camP.z + 8;
+  // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
+  const highPines = placeSpecies({ count: 45, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
+  addTrunks(scene, highPines, makeTrunkGeo({ topR: 0.13, botR: 0.55, h: 14.5, flare: 3.6 }), highBark);
+  addDeadSticks(scene, highPines, highBark);
+  scatterBranches(scene, highPines, branchGeo, highTex, {
+    tiers: 9, branches: 9,
+    crownBase: 7.8, crownTop: 14.3,
+    lenBase: 2.3, lenTop: 0.5,
+    droopBase: 0.26, droopJitter: 0.3,
+    hue: 0.27, light: 0.36,
+  });
+  addSpires(scene, highPines, highTopTex, { crownTop: 14.3, hue: 0.27, light: 0.4 });
 
-    let attempts = 0;
-    while (matrices.length < g.count && attempts < g.count * 40) {
-      attempts++;
-      const x = (Math.random() - 0.5) * 290;
-      const z = (Math.random() - 0.5) * 290;
-      if ((x - camX) * (x - camX) + (z - camZ) * (z - camZ) < 15 * 15) continue;
-      const { d: sd, t } = streamAt(x, z);
-      if (sd < g.minD || sd > g.maxD) continue;
-      // forest thickens away from the water
-      const keep = THREE.MathUtils.clamp((sd - g.minD) / 40 + 0.35, 0, 1);
-      if (Math.random() > keep) continue;
-      const h = terrainHeight(x, z);
-      if (h < levelAt(t) + 0.5) continue;
+  // ---- broadleaf — pale bent trunks near the banks, leafy blob crowns ----
+  const broadleafs = placeSpecies({
+    count: 38, minD: 12, maxD: 45, sRange: [0.8, 1.2],
+    fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
+  });
+  addTrunks(scene, broadleafs, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 1.0 }), birchBark);
+  scatterBroadleafCrowns(scene, broadleafs, leafTex);
 
-      const hs = g.hRange[0] + Math.random() * (g.hRange[1] - g.hRange[0]);
-      const ws = 0.85 + Math.random() * 0.3;
-      dummy.position.set(x, h - 0.3, z);
-      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-      dummy.scale.set(ws, hs, ws);
-      dummy.updateMatrix();
-      matrices.push(dummy.matrix.clone());
-    }
-    const n = matrices.length;
-    if (n === 0) continue;
-
-    const crowns = new THREE.InstancedMesh(g.crown, g.crownMat, n);
-    crowns.castShadow = true;
-    crowns.receiveShadow = true;
-    crowns.customDepthMaterial = new THREE.MeshDepthMaterial({
-      depthPacking: THREE.RGBADepthPacking,
-      map: g.tex,
-      alphaTest: 0.5,
-    });
-    for (let i = 0; i < n; i++) {
-      crowns.setMatrixAt(i, matrices[i]);
-      // near-white tint so the multiply barely darkens the leaf texture
-      col.setHSL(0.26 + g.tintH + (Math.random() - 0.5) * 0.03, 0.24, 0.74 + g.tintL + (Math.random() - 0.5) * 0.08);
-      crowns.setColorAt(i, col);
-    }
-    crowns.instanceMatrix.needsUpdate = true;
-    if (crowns.instanceColor) crowns.instanceColor.needsUpdate = true;
-    scene.add(crowns);
-
-    if (g.core) {
-      const cores = new THREE.InstancedMesh(g.core, coreMat, n);
-      cores.castShadow = true;
-      cores.receiveShadow = true;
-      const base = new THREE.Color(g.coreCol);
-      for (let i = 0; i < n; i++) {
-        cores.setMatrixAt(i, matrices[i]);
-        coreColVar.copy(base).offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.05);
-        cores.setColorAt(i, coreColVar);
-      }
-      cores.instanceMatrix.needsUpdate = true;
-      if (cores.instanceColor) cores.instanceColor.needsUpdate = true;
-      scene.add(cores);
-    }
-
-    if (g.trunk) {
-      const trunks = new THREE.InstancedMesh(g.trunk, g.trunkMat, n);
-      trunks.castShadow = true;
-      trunks.receiveShadow = true;
-      for (let i = 0; i < n; i++) trunks.setMatrixAt(i, matrices[i]);
-      trunks.instanceMatrix.needsUpdate = true;
-      scene.add(trunks);
-    }
-  }
+  // ---- spruce — darkest, tallest spires on the background slopes ----
+  const spruces = placeSpecies({ count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
+  addTrunks(scene, spruces, makeTrunkGeo({ topR: 0.1, botR: 0.85, h: 17, flare: 3.2 }), spruceBark);
+  scatterBranches(scene, spruces, branchGeo, darkTex, {
+    tiers: 13, branches: 10,
+    crownBase: 2.2, crownTop: 16.5,
+    lenBase: 3.3, lenTop: 0.42,
+    droopBase: 0.62, droopJitter: 0.22,
+    hue: 0.32, light: 0.34,
+  });
+  addSpires(scene, spruces, darkTopTex, { crownTop: 16.5, hue: 0.32, light: 0.34 });
 }
 
-function leafMaterial(tex, { windStrength = 0.14, grade = true } = {}) {
+// Rejection-sampled placements along the stream distance bands. The forest
+// thickens away from the water, and the opening camera position stays clear
+// so a random tree never spawns right in front of the initial view.
+function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
+  const trees = fixed.map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s }));
+  const camP = streamCurve.getPointAt(0.36);
+  const camX = camP.x - 2, camZ = camP.z + 8;
+
+  let attempts = 0;
+  while (trees.length < count && attempts < count * 40) {
+    attempts++;
+    const x = (Math.random() - 0.5) * 290;
+    const z = (Math.random() - 0.5) * 290;
+    if ((x - camX) * (x - camX) + (z - camZ) * (z - camZ) < 15 * 15) continue;
+    const { d: sd, t } = streamAt(x, z);
+    if (sd < minD || sd > maxD) continue;
+    const keep = THREE.MathUtils.clamp((sd - minD) / 40 + 0.35, 0, 1);
+    if (Math.random() > keep) continue;
+    const h = terrainHeight(x, z);
+    if (h < levelAt(t) + 0.5) continue;
+    trees.push({
+      x, z,
+      rot: Math.random() * Math.PI * 2,
+      s: sRange[0] + Math.random() * (sRange[1] - sRange[0]),
+    });
+  }
+  return trees;
+}
+
+// Thick tapered trunk with knobbly radial noise and a root flare spreading
+// into the ground; optional bend curves the whole stem (broadleaf).
+function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
+  const g = new THREE.CylinderGeometry(topR, botR, h, 14, 8, false);
+  g.translate(0, h / 2, 0);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  const dir = Math.random() * Math.PI * 2;
+  const bx = Math.cos(dir) * bend, bz = Math.sin(dir) * bend;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const t = v.y / h;
+    const ang = Math.atan2(v.z, v.x);
+    const lump = 1 + (Math.sin(ang * 3 + v.y * 0.8) * 0.5 + Math.sin(ang * 5 + 1.7 + v.y * 0.35) * 0.5) * 0.07;
+    const fl = t < 0.08 ? 1 + (0.08 - t) * flare * (0.55 + 0.45 * Math.sin(ang * 5 + 1.3)) : 1;
+    pos.setX(i, v.x * lump * fl + bx * t * t);
+    pos.setZ(i, v.z * lump * fl + bz * t * t);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  return g;
+}
+
+function addTrunks(scene, trees, geo, barkTex) {
+  const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95, metalness: 0 });
+  const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
+  const dummy = new THREE.Object3D();
+  trees.forEach((tr, i) => {
+    dummy.position.set(tr.x, terrainHeight(tr.x, tr.z) - 0.25, tr.z);
+    dummy.rotation.set((Math.random() - 0.5) * 0.07, tr.rot, (Math.random() - 0.5) * 0.07);
+    dummy.scale.set(tr.s, tr.s, tr.s);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  scene.add(mesh);
+}
+
+// Short dead branch stubs angling down off the bare lower trunks.
+function addDeadSticks(scene, trees, barkTex) {
+  if (trees.length === 0) return;
+  const PER = 7;
+  const geo = new THREE.CylinderGeometry(0.015, 0.055, 2.4, 5, 1);
+  geo.translate(0, 1.2, 0);
+  const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1, metalness: 0 });
+  const mesh = new THREE.InstancedMesh(geo, mat, trees.length * PER);
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  const dummy = new THREE.Object3D();
+  let m = 0;
+  for (const tr of trees) {
+    const yBase = terrainHeight(tr.x, tr.z);
+    for (let i = 0; i < PER; i++) {
+      const h = (2 + Math.random() * 4.8) * tr.s;
+      const a = Math.random() * Math.PI * 2;
+      const rad = (0.55 - (h / (14.5 * tr.s)) * 0.4) * tr.s * 0.8;
+      dummy.position.set(tr.x + Math.cos(a) * rad, yBase + h, tr.z + Math.sin(a) * rad);
+      dummy.rotation.set((Math.random() - 0.5) * 0.4, -a, -(Math.PI / 2 - 0.35 - Math.random() * 0.5));
+      const k = (0.5 + Math.random() * 0.6) * tr.s;
+      dummy.scale.set(k, k, k);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(m++, dummy.matrix);
+    }
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  scene.add(mesh);
+}
+
+// The unit pagoda branch: three side-view cards fanned ±yaw around the
+// branch axis plus one card lying flat in the branch plane, so each branch
+// covers a real horizontal sector of the tier (fan silhouette from above,
+// forked-twig silhouette from the side) instead of a single blade.
+function makePagodaFanGeo() {
+  const parts = [];
+  for (const [yaw, k, tiltX] of [[-0.5, 0.85, -0.26], [0, 1, 0.3], [0.5, 0.85, -0.22]]) {
+    const card = new THREE.PlaneGeometry(1, 0.5, 5, 1);
+    card.translate(0.5, 0, 0);
+    card.rotateX(tiltX);
+    card.scale(k, k, k);
+    card.rotateY(yaw);
+    parts.push(card);
+  }
+  const flat = new THREE.PlaneGeometry(1, 0.8, 5, 2);
+  flat.translate(0.5, 0, 0);
+  flat.rotateX(-Math.PI / 2);
+  flat.translate(0, 0.05, 0);
+  parts.push(flat);
+  const g = mergeGeometries(parts, false);
+  g.computeVertexNormals();
+  return g;
+}
+
+// The unit branch: a 1×0.5 card extending along +X from the trunk (uv.x 0 at
+// the root so wind pivots there), tip drooping with x², duplicated at ±cross
+// around X so every branch has volume from any angle.
+function makeBranchCardGeo({ droop = 0.22, cross = 0.62 }) {
+  const half = new THREE.PlaneGeometry(1, 0.5, 5, 1);
+  half.translate(0.5, 0, 0);
+  const pos = half.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    pos.setY(i, pos.getY(i) - x * x * droop);
+  }
+  const a = half.clone();
+  a.rotateX(cross);
+  half.rotateX(-cross);
+  const g = mergeGeometries([a, half], false);
+  g.computeVertexNormals();
+  return g;
+}
+
+function foliageMaterial(tex, { windStrength = 0.08, alphaTest = 0.36, axis = 'x' } = {}) {
   const mat = new THREE.MeshStandardMaterial({
     map: tex,
-    alphaTest: 0.45,
+    alphaTest,
     side: THREE.DoubleSide,
     roughness: 0.9,
     metalness: 0.0,
   });
-  applyWind(mat, { strength: windStrength, freq: 1.15, heightFactor: 0.08 });
+  applyCardWind(mat, { strength: windStrength, axis });
   keepAuthoredNormals(mat);
-  if (grade) applyCanopyGrade(mat);
   return mat;
 }
 
-// Two-tone canopy grade like the reference footage: surfaces facing the sky
-// get a warm yellow-green sun wash, undersides fall into cool deep green —
-// far stronger separation than plain lambert gives at this leaf scale.
-// Trees only rotate around Y, so objectNormal.y == world up-ness.
-function applyCanopyGrade(mat) {
-  const prev = mat.onBeforeCompile;
-  mat.onBeforeCompile = (shader) => {
-    if (prev) prev(shader);
-    shader.vertexShader = ('varying float vUpY;\n' + shader.vertexShader).replace(
-      '#include <begin_vertex>',
-      `#include <begin_vertex>
-       vUpY = objectNormal.y;`
-    );
-    shader.fragmentShader = ('varying float vUpY;\n' + shader.fragmentShader).replace(
-      '#include <color_fragment>',
-      `#include <color_fragment>
-      {
-        float up = clamp(vUpY * 0.5 + 0.5, 0.0, 1.0);
-        diffuseColor.rgb *= mix(vec3(0.6, 0.66, 0.62), vec3(1.38, 1.32, 0.88), up);
-      }`
-    );
-  };
-  const prevKey = mat.customProgramCacheKey ? mat.customProgramCacheKey.bind(mat) : () => '';
-  mat.customProgramCacheKey = () => prevKey() + '-canopy-grade';
-  return mat;
+function depthMaterial(tex, alphaTest) {
+  return new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: tex, alphaTest });
 }
 
-// 小叶榄仁-style tiered tree: straight trunk, whorls of near-horizontal
-// branches, and flat umbrella foliage layers shrinking toward the top.
-// Returns { trunk, core, crown }:
-//   trunk — trunk + whorled branch cylinders (bark material)
-//   core  — flattened solid blobs, one per tier (dark interior)
-//   crown — small leaf cards lying on each tier's upper surface
-function buildTieredTree({ h, tiers, r0 }) {
-  const trunkParts = [];
-  const coreParts = [];
-  const cardParts = [];
+// Whorls of branch instances: per tier, `branches` cards fanned around the
+// trunk with jittered yaw/droop/length, colour lightening toward the top.
+function scatterBranches(scene, trees, geo, tex, p) {
+  const yJitter = p.yJitter ?? 0.5;
+  const tilt = p.tilt ?? 0.6;
+  const counts = [];
+  for (let i = 0; i < p.tiers; i++) {
+    const t = p.tiers === 1 ? 0 : i / (p.tiers - 1);
+    counts.push(Math.max(3, Math.round(p.branches * (1 - t * 0.4))));
+  }
+  const perTree = counts.reduce((a, b) => a + b, 0);
+  const mat = foliageMaterial(tex, { windStrength: 0.08 });
+  const mesh = new THREE.InstancedMesh(geo, mat, trees.length * perTree);
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  mesh.customDepthMaterial = depthMaterial(tex, 0.36);
 
-  // straight trunk with a gentle taper
-  const trunk = new THREE.CylinderGeometry(0.14, 0.42, h, 7, 4, false);
-  trunk.translate(0, h / 2, 0);
-  trunkParts.push(trunk);
-
-  for (let i = 0; i < tiers; i++) {
-    const k = i / (tiers - 1);
-    const y = h * (0.42 + 0.58 * k) + (Math.random() - 0.5) * h * 0.04;
-    const r = r0 * (1 - 0.68 * k) * (0.9 + Math.random() * 0.2);
-    // thick puffy tiers, not plates — the ref canopy reads as one broken mass
-    const thick = 0.85 + r * 0.24;
-    const ox = (Math.random() - 0.5) * 1.2;
-    const oz = (Math.random() - 0.5) * 1.2;
-
-    // whorl of horizontal branches reaching to the tier edge
-    const nBr = 4 + ((Math.random() * 2) | 0);
-    for (let b = 0; b < nBr; b++) {
-      const ang = (b / nBr) * Math.PI * 2 + Math.random() * 0.6;
-      const len = r * (0.75 + Math.random() * 0.2);
-      const br = new THREE.CylinderGeometry(0.03, 0.09, len, 4, 1, false);
-      br.translate(0, len / 2, 0);
-      br.rotateZ(Math.PI / 2 - 0.12 - Math.random() * 0.1); // near-horizontal, tips up a touch
-      br.rotateY(ang);
-      br.translate(0, y - thick * 0.35, 0);
-      trunkParts.push(br);
-    }
-
-    // lumpy blob — the leafy mass of the tier, tilted a touch off-level
-    // (detail 3: detail 4 looked marginally smoother but cost ~4x the
-    // triangles across 200+ instanced trees — the mottled canopy texture
-    // hides the facets well enough)
-    const blob = new THREE.IcosahedronGeometry(1, 3);
-    const bp = blob.attributes.position;
-    for (let vi = 0; vi < bp.count; vi++) {
-      const x = bp.getX(vi), yy = bp.getY(vi), z = bp.getZ(vi);
-      const n = Math.sin(x * 3.4 + z * 2.6) * 0.5 + Math.sin(yy * 4.1 + x * 2.2) * 0.5;
-      const f = 1 + n * 0.42;
-      bp.setXYZ(vi, x * f, yy * f, z * f);
-    }
-    bp.needsUpdate = true;
-    blob.computeVertexNormals();
-    blob.scale(r * (0.85 + Math.random() * 0.3), thick * (0.8 + Math.random() * 0.45), r * (0.85 + Math.random() * 0.3));
-    blob.rotateX((Math.random() - 0.5) * 0.24);
-    blob.rotateZ((Math.random() - 0.5) * 0.24);
-    blob.translate(ox, y, oz);
-    coreParts.push(blob);
-
-    // dense leaf cards mounding over the tier's sunlit top
-    const nCards = Math.max(11, Math.round(r * 7));
-    for (let c = 0; c < nCards; c++) {
-      const s = 1.6 + Math.random() * 1.2;
-      const card = new THREE.PlaneGeometry(s, s);
-      card.rotateZ(Math.random() * Math.PI * 2);
-      card.rotateX(-Math.PI / 2 + (Math.random() - 0.5) * 0.7);
-      const a = Math.random() * Math.PI * 2;
-      const rr = Math.sqrt(Math.random()) * r * 0.95;
-      const px = ox + Math.cos(a) * rr;
-      const pz = oz + Math.sin(a) * rr;
-      const py = y + thick * (0.35 + Math.random() * 0.75) * (1 - (rr / r) * 0.45);
-      card.translate(px, py, pz);
-      // up-tilted normals so the mounds read as sunlit clumps
-      const nrm = card.attributes.normal;
-      const nv = new THREE.Vector3(px * 0.25, 1, pz * 0.25).normalize();
-      for (let vi = 0; vi < nrm.count; vi++) nrm.setXYZ(vi, nv.x, nv.y, nv.z);
-      cardParts.push(card);
-    }
-
-    // rim cards tilted outward — breaks the smooth disc silhouette
-    const nRim = Math.max(7, Math.round(r * 3.6));
-    for (let c = 0; c < nRim; c++) {
-      const s = 1.4 + Math.random() * 1.0;
-      const card = new THREE.PlaneGeometry(s, s);
-      const a = (c / nRim) * Math.PI * 2 + Math.random() * 0.5;
-      card.rotateZ(Math.random() * Math.PI * 2);
-      card.rotateX(-Math.PI / 2 + 0.55 + Math.random() * 0.4); // leaning off the edge
-      card.rotateY(a);
-      const px = ox + Math.cos(a) * r * (0.92 + Math.random() * 0.18);
-      const pz = oz + Math.sin(a) * r * (0.92 + Math.random() * 0.18);
-      const py = y + (Math.random() - 0.35) * thick * 0.8;
-      card.translate(px, py, pz);
-      const nrm = card.attributes.normal;
-      const nv = new THREE.Vector3(Math.cos(a) * 0.7, 0.75, Math.sin(a) * 0.7).normalize();
-      for (let vi = 0; vi < nrm.count; vi++) nrm.setXYZ(vi, nv.x, nv.y, nv.z);
-      cardParts.push(card);
-    }
-
-    // a few underside cards facing down — the canopy grade turns them into
-    // the deep shadowed belly each tier needs to read as a volume
-    const nUnder = Math.max(4, Math.round(r * 2.2));
-    for (let c = 0; c < nUnder; c++) {
-      const s = 1.4 + Math.random() * 1.0;
-      const card = new THREE.PlaneGeometry(s, s);
-      card.rotateZ(Math.random() * Math.PI * 2);
-      card.rotateX(Math.PI / 2 + (Math.random() - 0.5) * 0.6);
-      const a = Math.random() * Math.PI * 2;
-      const rr = Math.sqrt(Math.random()) * r * 0.8;
-      const px = ox + Math.cos(a) * rr;
-      const pz = oz + Math.sin(a) * rr;
-      const py = y - thick * (0.45 + Math.random() * 0.4);
-      card.translate(px, py, pz);
-      const nrm = card.attributes.normal;
-      const nv = new THREE.Vector3(px * 0.3, -0.8, pz * 0.3).normalize();
-      for (let vi = 0; vi < nrm.count; vi++) nrm.setXYZ(vi, nv.x, nv.y, nv.z);
-      cardParts.push(card);
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  let m = 0;
+  for (const tr of trees) {
+    const yBase = terrainHeight(tr.x, tr.z);
+    for (let i = 0; i < p.tiers; i++) {
+      const t = p.tiers === 1 ? 0 : i / (p.tiers - 1);
+      const y = yBase + (p.crownBase + t * (p.crownTop - p.crownBase)) * tr.s;
+      const len = Math.max(0.35, p.lenBase * (1 - t) + p.lenTop * t) * tr.s;
+      const yaw0 = tr.rot + i * 0.62;
+      for (let b = 0; b < counts[i]; b++) {
+        const yaw = yaw0 + (b / counts[i]) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const droop = p.droopBase * (1 - t * 0.6) + (Math.random() - 0.5) * p.droopJitter;
+        const off = 0.12 * tr.s;
+        dummy.position.set(
+          tr.x + Math.cos(yaw) * off,
+          y + (Math.random() - 0.5) * yJitter * tr.s,
+          tr.z - Math.sin(yaw) * off
+        );
+        dummy.rotation.set((Math.random() - 0.5) * tilt, yaw, -droop);
+        const L = len * (0.8 + Math.random() * 0.45);
+        // fan geometries carry their horizontal spread in z, so scale it with
+        // the branch length; plain crossed cards keep z at 1
+        dummy.scale.set(L, L * (0.85 + Math.random() * 0.35) * (p.yScale ?? 1), p.fan ? L : 1);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(m, dummy.matrix);
+        col.setHSL(
+          p.hue + (Math.random() - 0.5) * 0.02,
+          0.3 + Math.random() * 0.15,
+          p.light + t * 0.07 + Math.random() * 0.09
+        );
+        mesh.setColorAt(m, col);
+        m++;
+      }
     }
   }
-
-  const trunkGeo = mergeGeometries(trunkParts, false);
-  trunkGeo.computeVertexNormals();
-  return {
-    trunk: trunkGeo,
-    core: mergeGeometries(coreParts, false),
-    crown: mergeGeometries(cardParts, false),
-  };
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  scene.add(mesh);
 }
 
-// Bent tapered trunk + a few branches angling up into the crown.
-function buildTrunk({ topR, botR, h, bend, branches = 0, crownY = h }) {
-  const parts = [];
-  const g = new THREE.CylinderGeometry(topR, botR, h, 7, 6, false);
-  g.translate(0, h / 2, 0);
+// Three crossed vertical spire cards capping each conifer.
+function addSpires(scene, trees, tex, { crownTop, hue, light }) {
+  const card = new THREE.PlaneGeometry(0.8, 1.7, 1, 4);
+  card.translate(0, 0.78, 0);
+  const geo = mergeGeometries(
+    [card, card.clone().rotateY(Math.PI / 3), card.clone().rotateY((Math.PI * 2) / 3)],
+    false
+  );
+  geo.computeVertexNormals();
+  const mat = foliageMaterial(tex, { windStrength: 0.1, axis: 'y' });
+  const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  mesh.customDepthMaterial = depthMaterial(tex, 0.36);
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  trees.forEach((tr, i) => {
+    const y = terrainHeight(tr.x, tr.z) + (crownTop - 0.3) * tr.s;
+    dummy.position.set(tr.x, y, tr.z);
+    dummy.rotation.set(0, tr.rot, (Math.random() - 0.5) * 0.06);
+    const k = (1 + Math.random() * 0.35) * tr.s;
+    dummy.scale.set(k, k, k);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    col.setHSL(hue + (Math.random() - 0.5) * 0.02, 0.32, light + Math.random() * 0.08);
+    mesh.setColorAt(i, col);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  scene.add(mesh);
+}
+
+// Broadleaf crowns: a loose cloud of noise-displaced leafy blobs plus curved
+// leaf shells, every piece fully random-rotated with its own colour — the
+// leaf-disc texture breaks the silhouette into individual leaves.
+function scatterBroadleafCrowns(scene, trees, tex) {
+  if (trees.length === 0) return;
+  const BLOBS = 11, SHELLS = 14;
+  const blobGeo = makeBlobGeo();
+  const shellGeo = makeShellGeo();
+  const blobMat = foliageMaterial(tex, { windStrength: 0.05, alphaTest: 0.28, axis: 'y' });
+  const shellMat = foliageMaterial(tex, { windStrength: 0.06, alphaTest: 0.45, axis: 'y' });
+  const blobs = new THREE.InstancedMesh(blobGeo, blobMat, trees.length * BLOBS);
+  const shells = new THREE.InstancedMesh(shellGeo, shellMat, trees.length * SHELLS);
+  for (const [mesh, at] of [[blobs, 0.28], [shells, 0.45]]) {
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    mesh.customDepthMaterial = depthMaterial(tex, at);
+  }
+
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  let mb = 0, ms = 0;
+  for (const tr of trees) {
+    const cy = terrainHeight(tr.x, tr.z) + 7.2 * tr.s;
+    const spread = 1.6 * tr.s;
+    for (let i = 0; i < BLOBS; i++) {
+      dummy.position.set(
+        tr.x + (Math.random() - 0.5) * spread * 1.7,
+        cy + (Math.random() - 0.5) * spread * 1.2,
+        tr.z + (Math.random() - 0.5) * spread * 1.7
+      );
+      dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      const k = (1.6 + Math.random() * 1.0) * tr.s;
+      dummy.scale.set(k, k * (0.75 + Math.random() * 0.35), k);
+      dummy.updateMatrix();
+      blobs.setMatrixAt(mb, dummy.matrix);
+      col.setHSL(0.27 + Math.random() * 0.04, 0.26 + Math.random() * 0.14, 0.33 + Math.random() * 0.14);
+      blobs.setColorAt(mb, col);
+      mb++;
+    }
+    for (let i = 0; i < SHELLS; i++) {
+      dummy.position.set(
+        tr.x + (Math.random() - 0.5) * spread * 2,
+        cy + (Math.random() - 0.5) * spread * 1.35,
+        tr.z + (Math.random() - 0.5) * spread * 2
+      );
+      dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
+      const k = (2.0 + Math.random() * 1.4) * tr.s;
+      dummy.scale.set(k, k, k);
+      dummy.updateMatrix();
+      shells.setMatrixAt(ms, dummy.matrix);
+      col.setHSL(0.27 + Math.random() * 0.04, 0.26 + Math.random() * 0.14, 0.35 + Math.random() * 0.14);
+      shells.setColorAt(ms, col);
+      ms++;
+    }
+  }
+  for (const mesh of [blobs, shells]) {
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    scene.add(mesh);
+  }
+}
+
+// Lumpy squashed sphere the leaf-disc texture wraps around. Vertices are
+// merged before displacing so the normals smooth across facets instead of
+// reading as a low-poly rock.
+function makeBlobGeo() {
+  const raw = new THREE.IcosahedronGeometry(0.55, 2);
+  raw.deleteAttribute('uv'); // per-face uvs block vertex merging
+  const g = mergeVertices(raw);
   const pos = g.attributes.position;
-  const dir = Math.random() * Math.PI * 2;
-  const bx = Math.cos(dir) * bend, bz = Math.sin(dir) * bend;
+  const v = new THREE.Vector3();
+  const uvs = new Float32Array(pos.count * 2);
   for (let i = 0; i < pos.count; i++) {
-    const t = pos.getY(i) / h;
-    pos.setX(i, pos.getX(i) + bx * t * t);
-    pos.setZ(i, pos.getZ(i) + bz * t * t);
+    v.fromBufferAttribute(pos, i);
+    const n = Math.sin(v.x * 4.2 + 9 + v.y * 4.2 + v.z * 3.2) * 0.5 + Math.sin(v.y * 7.5 + v.x * 5.5) * 0.5;
+    const f = 1 + n * 0.34;
+    pos.setXYZ(i, v.x * f, v.y * f * 0.82, v.z * f);
+    // simple spherical wrap — the leaf texture is busy enough to hide the seam
+    uvs[i * 2] = Math.atan2(v.z, v.x) / (Math.PI * 2) + 0.5;
+    uvs[i * 2 + 1] = v.y / 1.1 + 0.5;
   }
   pos.needsUpdate = true;
-  parts.push(g);
-
-  for (let b = 0; b < branches; b++) {
-    const len = 2.6 + Math.random() * 2.2;
-    const br = new THREE.CylinderGeometry(0.05, 0.13, len, 5, 1, false);
-    br.translate(0, len / 2, 0);
-    const pitch = 0.6 + Math.random() * 0.5; // lean away from vertical
-    const yaw = Math.random() * Math.PI * 2;
-    br.rotateZ(pitch);
-    br.rotateY(yaw);
-    const hy = h * (0.55 + Math.random() * 0.3);
-    const t = hy / h;
-    br.translate(bx * t * t, hy, bz * t * t);
-    parts.push(br);
-  }
-  const merged = mergeGeometries(parts, false);
-  merged.computeVertexNormals();
-  return merged;
-}
-
-// Small leaf-cluster cards grouped into branch clumps on the crown ellipsoid,
-// each card tangent to the surface (plane normal = radial) with a bit of
-// random tilt/roll — no big face-on plates, silhouette stays puffy.
-function buildLeafCrown({ cy, rx, ry, clumps, size }) {
-  const parts = [];
-  const Z = new THREE.Vector3(0, 0, 1);
-  const radial = new THREE.Vector3();
-  const q = new THREE.Quaternion();
-  for (let c = 0; c < clumps; c++) {
-    // clump centre on the shell (slightly biased upward for a sunlit top)
-    const dir = new THREE.Vector3().randomDirection();
-    dir.y = dir.y * 0.85 + 0.15;
-    dir.normalize();
-    const cxp = dir.x * rx, cyp = dir.y * ry, czp = dir.z * rx;
-
-    const nCards = 6 + ((Math.random() * 4) | 0);
-    for (let k = 0; k < nCards; k++) {
-      const s = size * (0.75 + Math.random() * 0.6);
-      const card = new THREE.PlaneGeometry(s, s);
-      // roll + slight tilt in card space, then orient tangent to the shell
-      card.rotateZ(Math.random() * Math.PI * 2);
-      card.rotateX((Math.random() - 0.5) * 0.8);
-      card.rotateY((Math.random() - 0.5) * 0.8);
-
-      const px = cxp + (Math.random() - 0.5) * size * 1.3;
-      const py = cyp + (Math.random() - 0.5) * size * 1.3;
-      const pz = czp + (Math.random() - 0.5) * size * 1.3;
-      radial.set(px / rx, py / ry, pz / rx).normalize();
-      q.setFromUnitVectors(Z, radial);
-      card.applyQuaternion(q);
-      card.translate(px, cy + py, pz);
-
-      // radial normals -> the whole crown shades like one rounded mass
-      const nrm = card.attributes.normal;
-      for (let i = 0; i < nrm.count; i++) nrm.setXYZ(i, radial.x, radial.y, radial.z);
-      parts.push(card);
-    }
-  }
-  return mergeGeometries(parts, false);
-}
-
-// Dark displaced blob filling the crown interior.
-function buildCoreBlob({ cy, rx, ry }) {
-  const g = new THREE.IcosahedronGeometry(1, 2);
-  const pos = g.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const n = Math.sin(x * 3.1 + y * 2.2) * Math.cos(z * 2.7) * 0.5
-            + Math.sin(y * 4.3 + z * 3.4) * 0.5;
-    const f = 1 + n * 0.22;
-    pos.setXYZ(i, x * f, y * f, z * f);
-  }
-  pos.needsUpdate = true;
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   g.computeVertexNormals();
-  g.scale(rx, ry, rx);
-  g.translate(0, cy, 0);
   return g;
 }
 
-function buildSpruceCards({ h, w }) {
-  const parts = [];
-  for (let i = 0; i < 3; i++) {
-    const card = new THREE.PlaneGeometry(w, h);
-    card.rotateY((i / 3) * Math.PI);
-    card.translate(0, h / 2 - 0.4, 0);
-    parts.push(card);
-  }
-  const g = mergeGeometries(parts, false);
-  // upward-tilted normals so spruces catch skylight instead of going black
-  const n = g.attributes.normal;
-  const up = new THREE.Vector3();
-  for (let k = 0; k < n.count; k++) {
-    up.set(n.getX(k), 0.9, n.getZ(k)).normalize();
-    n.setXYZ(k, up.x, up.y, up.z);
-  }
-  return g;
-}
-
-// Solid dark cone inside the crossed spruce cards.
-function buildSpruceCore({ h, w }) {
-  const g = new THREE.ConeGeometry(w * 0.30, h * 0.9, 7, 3);
+// Gently curved square shell — a handful of leaves bending with the wind.
+function makeShellGeo() {
+  const g = new THREE.PlaneGeometry(1, 1, 4, 4);
   const pos = g.attributes.position;
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-    const n = Math.sin(x * 2.5 + y * 1.8) * Math.cos(z * 2.2);
-    pos.setXYZ(i, x * (1 + n * 0.12), y, z * (1 + n * 0.12));
+    const x = pos.getX(i), y = pos.getY(i);
+    pos.setZ(i, (x * x + y * y) * 0.5);
   }
-  pos.needsUpdate = true;
   g.computeVertexNormals();
-  g.translate(0, h * 0.45, 0);
   return g;
-}
-
-function range(n) {
-  return Array.from({ length: n }, (_, i) => i);
 }
