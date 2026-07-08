@@ -26,35 +26,25 @@ export function createWorld(scene) {
   // hot sun almost overhead, slightly ahead for a shimmering backlit stream
   const sunPos = new THREE.Vector3(30, 115, -40);
   const sun = new THREE.DirectionalLight(PALETTE.sun, 4.4);
-  sun.position.copy(sunPos);
+  // shadow camera sits far along the sun direction so its static box can
+  // cover the whole ~300m field — soft low-res shadows everywhere, at any
+  // camera distance, rather than a crisp box that follows the camera
+  sun.position.copy(sunPos).multiplyScalar(2);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  // tight box that follows the camera (see updateShadows) instead of a huge
-  // static one covering the whole field — better texel density at half the
-  // map size, and the shadow pass rasterizes far less geometry
-  const s = 70;
+  sun.shadow.mapSize.set(1024, 1024);
+  const s = 180;
   sun.shadow.camera.left = -s;
   sun.shadow.camera.right = s;
   sun.shadow.camera.top = s;
   sun.shadow.camera.bottom = -s;
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 240;
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.05;
+  sun.shadow.camera.near = 20;
+  sun.shadow.camera.far = 400;
+  sun.shadow.bias = -0.0006;
+  sun.shadow.normalBias = 0.2;
   scene.add(sun);
   scene.add(sun.target);
 
-  // keep the shadow box centred on the camera, snapped to a coarse grid so
-  // the shadow texels don't shimmer as the camera glides
-  const SNAP = 4;
-  function updateShadows(camera) {
-    const tx = Math.round(camera.position.x / SNAP) * SNAP;
-    const tz = Math.round(camera.position.z / SNAP) * SNAP;
-    sun.target.position.set(tx, 0, tz);
-    sun.position.set(tx + sunPos.x, sunPos.y, tz + sunPos.z);
-  }
-
-  return { sun, sunPos, hemi, PALETTE, updateShadows };
+  return { sun, sunPos, hemi, PALETTE };
 }
 
 function makeSkyDome() {
