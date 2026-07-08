@@ -33,10 +33,11 @@ export function createParticles(scene, clearing) {
   scene.add(dust);
 
   // ---- birds ----
-  const birdMat = new THREE.MeshBasicMaterial({ color: 0x33291c, fog: true, side: THREE.DoubleSide });
+  const birdMat = new THREE.MeshLambertMaterial({ color: 0xf4f1e8, fog: true, side: THREE.DoubleSide });
+  const beakMat = new THREE.MeshLambertMaterial({ color: 0xd99a3d, fog: true });
   const birds = [];
   for (let i = 0; i < 6; i++) {
-    const b = makeBird(birdMat);
+    const b = makeBird(birdMat, beakMat);
     Object.assign(b.userData, {
       radius: 22 + Math.random() * 16,
       speed: 0.18 + Math.random() * 0.12,
@@ -97,17 +98,43 @@ function dotTexture() {
   return new THREE.CanvasTexture(c);
 }
 
-function makeBird(mat) {
+// A small white dove-like bird flying toward local +z: plump body, head with
+// an orange beak, fan tail, and the two flapping wing triangles.
+function makeBird(mat, beakMat) {
   const g = new THREE.Group();
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), mat);
+  body.scale.set(0.9, 0.85, 2.1);
+  g.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 8, 6), mat);
+  head.position.set(0, 0.16, 0.6);
+  g.add(head);
+
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.22, 5), beakMat);
+  beak.rotation.x = Math.PI / 2;
+  beak.position.set(0, 0.14, 0.82);
+  g.add(beak);
+
+  const tailGeo = new THREE.BufferGeometry();
+  tailGeo.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute([0, 0, -0.5, -0.22, 0.02, -1.05, 0.22, 0.02, -1.05], 3)
+  );
+  tailGeo.computeVertexNormals();
+  g.add(new THREE.Mesh(tailGeo, mat));
+
+  // wide root against the body, tapering to a swept-back tip
   const wingGeo = new THREE.BufferGeometry();
   wingGeo.setAttribute(
     'position',
-    new THREE.Float32BufferAttribute([0, 0, 0, 1.5, 0, 0.25, 1.5, 0.05, -0.9], 3)
+    new THREE.Float32BufferAttribute([0, 0, 0.35, 0, 0, -0.35, 1.2, 0.05, -0.25], 3)
   );
   wingGeo.computeVertexNormals();
   const lw = new THREE.Mesh(wingGeo, mat);
   const rw = new THREE.Mesh(wingGeo, mat);
   rw.scale.x = -1;
+  lw.position.y = rw.position.y = 0.08;
   g.add(lw, rw);
   g.userData = { lw, rw };
   return g;
