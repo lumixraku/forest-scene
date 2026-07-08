@@ -25,7 +25,7 @@ export function createGrass(scene) {
     metalness: 0.0,
     side: THREE.DoubleSide,
   });
-  applyWind(mat, { strength: 0.28, freq: 1.9, heightFactor: 0.8 });
+  applyWind(mat, { strength: 0.1, freq: 1.9, heightFactor: 0.8 });
   keepAuthoredNormals(mat);
 
   const COUNT = 60000;
@@ -58,11 +58,12 @@ export function createGrass(scene) {
     const h = terrainHeight(x, z);
     if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
 
-    // shorter tufts near the water's edge
-    const s = (0.62 + Math.random() * 0.72) * (0.7 + 0.3 * THREE.MathUtils.smoothstep(bankD, 0, 8));
+    // shorter tufts near the water's edge; tight scale range keeps the lawn
+    // even, like it's been trimmed
+    const s = (0.6 + Math.random() * 0.2) * (0.8 + 0.2 * THREE.MathUtils.smoothstep(bankD, 0, 8));
     dummy.position.set(x, h - 0.05, z);
     dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    dummy.scale.set(s, s * (0.8 + Math.random() * 0.6), s);
+    dummy.scale.set(s, s * (0.9 + Math.random() * 0.2), s);
     dummy.updateMatrix();
 
     // sunnier (yellower) tufts on open slopes, deeper green near the water
@@ -123,8 +124,8 @@ function buildTuftGeometry() {
   const BLADES = 6;
   for (let i = 0; i < BLADES; i++) {
     const ang = (i / BLADES) * Math.PI * 2 + Math.random() * 0.9;
-    const lean = 0.12 + Math.random() * 0.3;
-    const height = 0.8 + Math.random() * 0.55;
+    const lean = 0.1 + Math.random() * 0.16;
+    const height = 0.38 + Math.random() * 0.18;
     blades.push(buildBlade(ang, lean, height, Math.random() * 0.22));
   }
   const geo = mergeGeometries(blades, false);

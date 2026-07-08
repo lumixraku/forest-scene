@@ -123,7 +123,6 @@ function animate() {
   stream.update(dt);
   particles.update(dt, t);
   controls.update();
-  world.updateShadows(camera);
   grass.update(camera);
   composer.render();
   requestAnimationFrame(animate);
