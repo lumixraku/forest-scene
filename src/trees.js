@@ -4,8 +4,8 @@ import { applyCardWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, streamCurve } from './streamPath.js';
 import {
-  makePagodaBranchTexture, makeLeafBlobTexture, makeNeedleBranchTexture,
-  makeSpruceTopTexture, makeBarkTexture, makeBirchTexture,
+  makePagodaBranchTexture, makeGinkgoBranchTexture, makeNeedleBranchTexture,
+  makeSpruceTopTexture, makeBarkTexture,
 } from './textures.js';
 
 // Old-growth conifer forest, built the way the reference scene does it:
@@ -27,7 +27,8 @@ export function createTrees(scene) {
   const pineBark = makeBarkTexture({ base: '#4f4338', crack: 'rgba(22,18,14,1)', ridge: 'rgba(120,104,84,1)' });
   const highBark = makeBarkTexture({ base: '#54453a', crack: 'rgba(28,20,14,1)', ridge: 'rgba(140,110,80,1)', knots: false });
   const spruceBark = makeBarkTexture({ base: '#453a32', crack: 'rgba(18,14,10,1)', ridge: 'rgba(108,92,74,1)' });
-  const birchBark = makeBirchTexture();
+  // ginkgo bark: grey-brown furrowed wood
+  const ginkgoBark = makeBarkTexture({ base: '#6e5b46', crack: 'rgba(30,22,15,1)', ridge: 'rgba(158,136,108,1)', knots: false });
 
   const pineCols = ['#26402a', '#3c5a33', '#5d7a44'];
   const highCols = ['#2c4a24', '#48662f', '#74904a'];
@@ -38,7 +39,7 @@ export function createTrees(scene) {
   const highTopTex = makeSpruceTopTexture(highCols);
   const darkTex = makeNeedleBranchTexture(darkCols);
   const darkTopTex = makeSpruceTopTexture(darkCols);
-  const leafTex = makeLeafBlobTexture(['#476b33', '#6f8d47', '#8fae55']);
+  const ginkgoTex = makeGinkgoBranchTexture();
   const pagodaTex = makePagodaBranchTexture();
 
   // one shared drooping crossed-card geometry for every needle branch
@@ -85,13 +86,21 @@ export function createTrees(scene) {
   });
   addSpires(scene, highPines, highTopTex, { crownTop: 14.3, hue: 0.27, light: 0.4 });
 
-  // ---- broadleaf — pale bent trunks near the banks, leafy blob crowns ----
-  const broadleafs = placeSpecies({
-    count: 38, minD: 12, maxD: 45, sRange: [0.8, 1.2],
-    fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
+  // ---- ginkgo — pale trunks near the banks, whorls of hand-drawn golden
+  // fan-leaf branches, built branch-by-branch like the pagoda tree ----
+  const ginkgos = placeSpecies({
+    count: 38, minD: 12, maxD: 45, sRange: [1.6, 2.4],
+    fixed: [{ x: -30, z: -0.5, s: 2.4 }, { x: -16, z: -26, s: 2.3 }],
   });
-  addTrunks(scene, broadleafs, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 1.0 }), birchBark);
-  scatterBroadleafCrowns(scene, broadleafs, leafTex);
+  addTrunks(scene, ginkgos, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 }), ginkgoBark);
+  scatterBranches(scene, ginkgos, makeBranchCardGeo({ droop: 0.1, cross: 0.6 }), ginkgoTex, {
+    tiers: 7, branches: 7,
+    crownBase: 3.4, crownTop: 8.4,
+    lenBase: 2.9, lenTop: 1.1,
+    droopBase: -0.1, droopJitter: 0.2, // ginkgo limbs angle gently upward
+    yJitter: 0.3, tilt: 0.3,
+    hue: 0.115, light: 0.5,
+  });
 
   // ---- spruce — darkest, tallest spires on the background slopes ----
   const spruces = placeSpecies({ count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
@@ -106,11 +115,15 @@ export function createTrees(scene) {
   addSpires(scene, spruces, darkTopTex, { crownTop: 16.5, hue: 0.32, light: 0.34 });
 }
 
+// Global tree scale — trees tower over the grass and bushes; every species'
+// trunk, branches and crown all run through the per-tree `s`.
+const TREE_SCALE = 2;
+
 // Rejection-sampled placements along the stream distance bands. The forest
 // thickens away from the water, and the opening camera position stays clear
 // so a random tree never spawns right in front of the initial view.
 function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
-  const trees = fixed.map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s }));
+  const trees = fixed.map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE }));
   const camP = streamCurve.getPointAt(0.36);
   const camX = camP.x - 2, camZ = camP.z + 8;
 
@@ -129,7 +142,7 @@ function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
     trees.push({
       x, z,
       rot: Math.random() * Math.PI * 2,
-      s: sRange[0] + Math.random() * (sRange[1] - sRange[0]),
+      s: (sRange[0] + Math.random() * (sRange[1] - sRange[0])) * TREE_SCALE,
     });
   }
   return trees;
@@ -356,72 +369,10 @@ function addSpires(scene, trees, tex, { crownTop, hue, light }) {
   scene.add(mesh);
 }
 
-// Broadleaf crowns: a loose cloud of noise-displaced leafy blobs plus curved
-// leaf shells, every piece fully random-rotated with its own colour — the
-// leaf-disc texture breaks the silhouette into individual leaves.
-function scatterBroadleafCrowns(scene, trees, tex) {
-  if (trees.length === 0) return;
-  const BLOBS = 11, SHELLS = 14;
-  const blobGeo = makeBlobGeo();
-  const shellGeo = makeShellGeo();
-  const blobMat = foliageMaterial(tex, { windStrength: 0.05, alphaTest: 0.28, axis: 'y' });
-  const shellMat = foliageMaterial(tex, { windStrength: 0.06, alphaTest: 0.45, axis: 'y' });
-  const blobs = new THREE.InstancedMesh(blobGeo, blobMat, trees.length * BLOBS);
-  const shells = new THREE.InstancedMesh(shellGeo, shellMat, trees.length * SHELLS);
-  for (const [mesh, at] of [[blobs, 0.28], [shells, 0.45]]) {
-    mesh.castShadow = true;
-    mesh.frustumCulled = false;
-    mesh.customDepthMaterial = depthMaterial(tex, at);
-  }
-
-  const dummy = new THREE.Object3D();
-  const col = new THREE.Color();
-  let mb = 0, ms = 0;
-  for (const tr of trees) {
-    const cy = terrainHeight(tr.x, tr.z) + 7.2 * tr.s;
-    const spread = 1.6 * tr.s;
-    for (let i = 0; i < BLOBS; i++) {
-      dummy.position.set(
-        tr.x + (Math.random() - 0.5) * spread * 1.7,
-        cy + (Math.random() - 0.5) * spread * 1.2,
-        tr.z + (Math.random() - 0.5) * spread * 1.7
-      );
-      dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
-      const k = (1.6 + Math.random() * 1.0) * tr.s;
-      dummy.scale.set(k, k * (0.75 + Math.random() * 0.35), k);
-      dummy.updateMatrix();
-      blobs.setMatrixAt(mb, dummy.matrix);
-      col.setHSL(0.27 + Math.random() * 0.04, 0.26 + Math.random() * 0.14, 0.33 + Math.random() * 0.14);
-      blobs.setColorAt(mb, col);
-      mb++;
-    }
-    for (let i = 0; i < SHELLS; i++) {
-      dummy.position.set(
-        tr.x + (Math.random() - 0.5) * spread * 2,
-        cy + (Math.random() - 0.5) * spread * 1.35,
-        tr.z + (Math.random() - 0.5) * spread * 2
-      );
-      dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI * 2, Math.random() * Math.PI);
-      const k = (2.0 + Math.random() * 1.4) * tr.s;
-      dummy.scale.set(k, k, k);
-      dummy.updateMatrix();
-      shells.setMatrixAt(ms, dummy.matrix);
-      col.setHSL(0.27 + Math.random() * 0.04, 0.26 + Math.random() * 0.14, 0.35 + Math.random() * 0.14);
-      shells.setColorAt(ms, col);
-      ms++;
-    }
-  }
-  for (const mesh of [blobs, shells]) {
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    scene.add(mesh);
-  }
-}
-
 // Lumpy squashed sphere the leaf-disc texture wraps around. Vertices are
 // merged before displacing so the normals smooth across facets instead of
-// reading as a low-poly rock.
-function makeBlobGeo() {
+// reading as a low-poly rock. Also used by the foliage grass-ball bushes.
+export function makeBlobGeo() {
   const raw = new THREE.IcosahedronGeometry(0.55, 2);
   raw.deleteAttribute('uv'); // per-face uvs block vertex merging
   const g = mergeVertices(raw);
@@ -439,18 +390,6 @@ function makeBlobGeo() {
   }
   pos.needsUpdate = true;
   g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  g.computeVertexNormals();
-  return g;
-}
-
-// Gently curved square shell — a handful of leaves bending with the wind.
-function makeShellGeo() {
-  const g = new THREE.PlaneGeometry(1, 1, 4, 4);
-  const pos = g.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i);
-    pos.setZ(i, (x * x + y * y) * 0.5);
-  }
   g.computeVertexNormals();
   return g;
 }
