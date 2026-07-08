@@ -4,9 +4,10 @@ import { applyWind, keepAuthoredNormals } from './wind.js';
 import { terrainHeight } from './terrain.js';
 import { streamCurve, streamAt, levelAt, halfWidthAt } from './streamPath.js';
 import {
-  makeFlowerSpikeTexture, makeMeadowFlowerTexture, makeLeafClusterTexture,
-  makeFlowerBushTexture, makeSedgeTexture,
+  makeFlowerSpikeTexture, makeMeadowFlowerTexture,
+  makeFlowerBushTexture, makeSedgeTexture, makeLeafFillTexture,
 } from './textures.js';
+import { makeBlobGeo } from './trees.js';
 
 // Undergrowth accents: lupine-like flower spikes clustered on the banks,
 // small yellow/white meadow flowers sprinkled through the grass, and leafy
@@ -186,29 +187,14 @@ export function createFoliage(scene) {
     scene.add(mesh);
   }
 
-  // --- leafy card bushes between the trunks ---
+  // --- fluffy grass-ball bushes between the trunks, built the same way as
+  // the broadleaf tree crowns: noise-displaced blobs wrapped in a leaf-disc
+  // texture, several per bush, with meadow flowers poking out of the top ---
   {
-    const tex = makeLeafClusterTexture({ hue: 104, sat: 40, light: 38 });
-    const geo = bushCards();
-    const mat = new THREE.MeshStandardMaterial({
-      map: tex,
-      alphaTest: 0.45,
-      side: THREE.DoubleSide,
-      roughness: 0.95,
-    });
-    applyWind(mat, { strength: 0.12, freq: 1.4, heightFactor: 0.25 });
-    keepAuthoredNormals(mat);
     const COUNT = 140;
-    const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.customDepthMaterial = new THREE.MeshDepthMaterial({
-      depthPacking: THREE.RGBADepthPacking,
-      map: tex,
-      alphaTest: 0.5,
-    });
-    let placed = 0, attempts = 0;
-    while (placed < COUNT && attempts < COUNT * 30) {
+    const spots = [];
+    let attempts = 0;
+    while (spots.length < COUNT && attempts < COUNT * 30) {
       attempts++;
       const x = (Math.random() - 0.5) * 270;
       const z = (Math.random() - 0.5) * 270;
@@ -216,17 +202,86 @@ export function createFoliage(scene) {
       if (sd < halfWidthAt(t) + 2 || sd > 90) continue;
       const h = terrainHeight(x, z);
       if (h < levelAt(t) + 0.4) continue;
-      const s = 0.7 + Math.random() * 1.3;
-      dummy.position.set(x, h - 0.2, z);
-      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-      dummy.scale.set(s, s * 0.8, s);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(placed, dummy.matrix);
-      placed++;
+      spots.push({ x, z, h, s: 0.6 + Math.random() * 0.9 });
     }
-    mesh.count = placed;
-    mesh.instanceMatrix.needsUpdate = true;
-    scene.add(mesh);
+
+    // leaf blobs — fresh yellow-greens so the clump reads as lush grass
+    const leafTex = makeLeafFillTexture(['#6d8a33', '#93ad45', '#b7c95e']);
+    const blobMat = new THREE.MeshStandardMaterial({
+      map: leafTex,
+      alphaTest: 0.28,
+      side: THREE.DoubleSide,
+      roughness: 0.95,
+    });
+    applyWind(blobMat, { strength: 0.08, freq: 1.5, heightFactor: 0.3 });
+    keepAuthoredNormals(blobMat);
+    const BLOBS = 5;
+    const blobs = new THREE.InstancedMesh(makeBlobGeo(), blobMat, spots.length * BLOBS);
+    blobs.castShadow = true;
+    blobs.receiveShadow = true;
+    blobs.customDepthMaterial = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      map: leafTex,
+      alphaTest: 0.4,
+    });
+    const col = new THREE.Color();
+    let bi = 0;
+    for (const f of spots) {
+      for (let i = 0; i < BLOBS; i++) {
+        // one blob in the middle, the rest ringed around it, all hugging
+        // the ground so the cluster reads as a mound, not a floating crown
+        const a = (i / BLOBS) * Math.PI * 2 + Math.random();
+        const r = (i === 0 ? 0 : 0.55 + Math.random() * 0.35) * f.s;
+        dummy.position.set(
+          f.x + Math.cos(a) * r,
+          f.h + (0.26 + Math.random() * 0.16) * f.s,
+          f.z + Math.sin(a) * r
+        );
+        dummy.rotation.set((Math.random() - 0.5) * 0.5, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.5);
+        const k = (0.9 + Math.random() * 0.5) * f.s;
+        dummy.scale.set(k, k * 0.6, k);
+        dummy.updateMatrix();
+        blobs.setMatrixAt(bi, dummy.matrix);
+        col.setHSL(0.2 + Math.random() * 0.05, 0.42 + Math.random() * 0.14, 0.5 + Math.random() * 0.16);
+        blobs.setColorAt(bi, col);
+        bi++;
+      }
+    }
+    blobs.instanceMatrix.needsUpdate = true;
+    if (blobs.instanceColor) blobs.instanceColor.needsUpdate = true;
+    scene.add(blobs);
+
+    // meadow flowers nestled into the top of each clump
+    const flowerMat = new THREE.MeshStandardMaterial({
+      map: makeMeadowFlowerTexture(),
+      alphaTest: 0.4,
+      side: THREE.DoubleSide,
+      roughness: 0.9,
+    });
+    applyWind(flowerMat, { strength: 0.15, freq: 2.0, heightFactor: 0.6 });
+    keepAuthoredNormals(flowerMat);
+    const FLOWERS = 4;
+    const flowers = new THREE.InstancedMesh(crossCards(0.55, 0.55), flowerMat, spots.length * FLOWERS);
+    flowers.receiveShadow = true;
+    let fi = 0;
+    for (const f of spots) {
+      for (let i = 0; i < FLOWERS; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.random() * 0.5 * f.s;
+        dummy.position.set(
+          f.x + Math.cos(a) * r,
+          f.h + (0.45 + Math.random() * 0.2) * f.s,
+          f.z + Math.sin(a) * r
+        );
+        dummy.rotation.set(0, Math.random() * Math.PI, 0);
+        dummy.scale.setScalar((0.55 + Math.random() * 0.4) * f.s);
+        dummy.updateMatrix();
+        flowers.setMatrixAt(fi, dummy.matrix);
+        fi++;
+      }
+    }
+    flowers.instanceMatrix.needsUpdate = true;
+    scene.add(flowers);
   }
 }
 

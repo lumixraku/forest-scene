@@ -280,6 +280,87 @@ export function makePagodaBranchTexture(colors = ['#3f6626', '#5d8836', '#8cb050
   return toTexture(c);
 }
 
+// One whole ginkgo branch drawn side-on: a woody twig forking gently upward,
+// with tufts of FAN-shaped leaves (the unmistakable ginkgo silhouette) riding
+// spur shoots along every segment — autumn gold. Same recipe as the pagoda
+// branch: readable skeleton, foliage densest at the fine twig tips.
+export function makeGinkgoBranchTexture(colors = ['#c99a20', '#e2b93e', '#f2d465']) {
+  const W = 512, H = 256;
+  const c = canvas(W, H);
+  const ctx = c.getContext('2d');
+  ctx.lineCap = 'round';
+
+  // one fan leaf: short petiole, then a circle sector spreading ~60-80°
+  function fanLeaf(x, y, ang, size) {
+    const px = x + Math.cos(ang) * size * 0.45, py = y + Math.sin(ang) * size * 0.45;
+    ctx.strokeStyle = 'rgba(120,88,28,0.85)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+    const r = Math.random();
+    ctx.fillStyle = r < 0.34 ? colors[0] : r < 0.72 ? colors[1] : colors[2];
+    const spread = 1.0 + Math.random() * 0.4;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.arc(px, py, size * (0.8 + Math.random() * 0.3), ang - spread / 2, ang + spread / 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // spur shoot: a tuft of fans spraying up and outward from one point
+  function spur(x, y, size) {
+    const n = 4 + ((Math.random() * 4) | 0);
+    for (let i = 0; i < n; i++) {
+      const ang = -Math.PI / 2 + (Math.random() - 0.5) * 2.2;
+      fanLeaf(x + (Math.random() - 0.5) * 6, y + (Math.random() - 0.5) * 4, ang, size * (0.75 + Math.random() * 0.5));
+    }
+  }
+
+  const segs = [];
+  function fork(x, y, ang, len, w, depth) {
+    const ex = x + Math.cos(ang) * len;
+    const ey = y + Math.sin(ang) * len;
+    ctx.strokeStyle = depth < 2 ? '#6b573c' : '#5a4832';
+    ctx.globalAlpha = 0.95 - depth * 0.08;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + Math.cos(ang) * len * 0.5, y + Math.sin(ang) * len * 0.5 + 2, ex, ey);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    segs.push({ x, y, ex, ey, depth });
+    if (depth >= 3 || ex > 495) {
+      spur(ex, ey - 3, 15 + Math.random() * 7);
+      return;
+    }
+    const spread = 0.16 + Math.random() * 0.12 + depth * 0.04;
+    const upDrift = -0.08; // ginkgo twigs angle upward
+    fork(ex, ey, ang - spread + upDrift, len * 0.72, w * 0.6, depth + 1);
+    fork(ex, ey, ang + spread + upDrift, len * 0.72, w * 0.6, depth + 1);
+  }
+  fork(8, 165, -0.12, 155, 5, 0);
+
+  // spur shoots dotted along every segment, denser toward the tips
+  for (const s of segs) {
+    const n = s.depth + 1;
+    for (let i = 0; i < n; i++) {
+      const t = 0.3 + Math.random() * 0.65;
+      const px = s.x + (s.ex - s.x) * t;
+      const py = s.y + (s.ey - s.y) * t;
+      spur(px, py - 4 - Math.random() * (6 + s.depth * 6), 10 + Math.random() * 6 + s.depth * 2);
+    }
+    // a few fans hanging below the fine twigs
+    if (s.depth >= 2 && Math.random() < 0.6) {
+      fanLeaf(s.ex - 6, s.ey + 5, Math.PI / 2 + (Math.random() - 0.5) * 0.8, 12 + Math.random() * 6);
+    }
+  }
+
+  shadeTopDown(ctx, W, H, 0.22, 0.26);
+  return toTexture(c);
+}
+
 export function makeLeafBlobTexture(colors = ['#57652a', '#7c9440', '#a4b858']) {
   const S = 512;
   const c = canvas(S, S);
@@ -304,6 +385,20 @@ export function makeLeafBlobTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
     ctx.fill();
   }
   shadeTopDown(ctx, S, S, 0.18, 0.5);
+  return toTexture(c);
+}
+
+// Leaves covering the whole canvas edge-to-edge — for wrapping SMALL foliage
+// blobs, where the disc layout of makeLeafBlobTexture would leave the poles
+// and seam transparent and the blob would read as a hollow wreath.
+export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) {
+  const S = 256;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+  for (let i = 0; i < 700; i++) {
+    drawLeaf(ctx, Math.random() * S, Math.random() * S, Math.random() * Math.PI * 2, 8 + Math.random() * 13, colors, 0.62);
+  }
+  shadeTopDown(ctx, S, S, 0.15, 0.4);
   return toTexture(c);
 }
 
