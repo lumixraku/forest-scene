@@ -8,6 +8,11 @@ The look is inspired by [this post from Protopop Games](https://x.com/protopop/s
 
 ![Preview](preview.png)
 
+| | |
+|---|---|
+| ![Valley overview](screenshots/valley.png) | ![Stream under the ginkgos](screenshots/stream.png) |
+| ![Flower meadow and waterfall](screenshots/meadow.png) | |
+
 ## Highlights
 
 - 60k instanced grass tufts with a baked root-to-tip color gradient and wind sway
