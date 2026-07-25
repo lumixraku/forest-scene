@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
+import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
 import { streamCurve, streamAt, levelAt, halfWidthAt } from './streamPath.js';
 import {
@@ -216,17 +217,19 @@ export function createFoliage(scene) {
     applyWind(blobMat, { strength: 0.08, freq: 1.5, heightFactor: 0.3 });
     keepAuthoredNormals(blobMat);
     const BLOBS = 5;
-    const blobs = new THREE.InstancedMesh(makeBlobGeo(), blobMat, spots.length * BLOBS);
-    blobs.castShadow = true;
-    blobs.receiveShadow = true;
-    blobs.customDepthMaterial = new THREE.MeshDepthMaterial({
+    const blobGeo = makeBlobGeo();
+    const blobDepthMat = new THREE.MeshDepthMaterial({
       depthPacking: THREE.RGBADepthPacking,
       map: leafTex,
       alphaTest: 0.4,
     });
     const col = new THREE.Color();
-    let bi = 0;
+    // 700 blobs at 180 triangles each is the heaviest thing in the understory,
+    // and as one field-wide mesh it could never be frustum culled — every blob
+    // behind the camera was still submitted and still ran the wind shader.
+    const blobBuckets = new Map();
     for (const f of spots) {
+      const bucket = bucketFor(blobBuckets, f.x, f.z);
       for (let i = 0; i < BLOBS; i++) {
         // one blob in the middle, the rest ringed around it, all hugging
         // the ground so the cluster reads as a mound, not a floating crown
@@ -241,15 +244,16 @@ export function createFoliage(scene) {
         const k = (0.9 + Math.random() * 0.5) * f.s;
         dummy.scale.set(k, k * 0.6, k);
         dummy.updateMatrix();
-        blobs.setMatrixAt(bi, dummy.matrix);
+        bucket.mats.push(dummy.matrix.clone());
         col.setHSL(0.2 + Math.random() * 0.05, 0.42 + Math.random() * 0.14, 0.5 + Math.random() * 0.16);
-        blobs.setColorAt(bi, col);
-        bi++;
+        bucket.cols.push(col.clone());
       }
     }
-    blobs.instanceMatrix.needsUpdate = true;
-    if (blobs.instanceColor) blobs.instanceColor.needsUpdate = true;
-    scene.add(blobs);
+    addChunkedInstances(scene, blobBuckets, blobGeo, blobMat, {
+      castShadow: true,
+      receiveShadow: true,
+      depthMat: blobDepthMat,
+    });
 
     // meadow flowers nestled into the top of each clump
     const flowerMat = new THREE.MeshStandardMaterial({
