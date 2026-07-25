@@ -200,10 +200,17 @@ export function createStream(scene) {
 // gets sun specular, fogs with the scene.
 function buildWaterRibbon() {
   const SEGS = 420;
+  // Cross-channel columns. Two (one per bank) left every quad spanning the full
+  // width, and a quad whose four corners carry different depth/width values
+  // interpolates differently in each of its two triangles — which creased along
+  // every diagonal and read as glass tiles on a wide pool. It also meant the
+  // middle of a 43-unit lake could not hold a depth gradient at all.
+  const COLS = 8;
   const positions = [];
   const uvs = [];
   const foamAttr = [];
   const depthAttr = [];
+  const widthAttr = [];
   const index = [];
   for (let i = 0; i <= SEGS; i++) {
     const t = i / SEGS;
@@ -213,20 +220,33 @@ function buildWaterRibbon() {
     const bl = Math.hypot(bx, bz) || 1;
     const w = halfWidthAt(t) + 1.8; // tucked under both banks
     const y = levelAt(t) - 0.1;
-    for (const side of [-1, 1]) {
-      const x = p.x + (bx / bl) * w * side;
-      const z = p.z + (bz / bl) * w * side;
-      positions.push(x, y, z);
-      // water depth below this point: 0 at the shoreline -> 1 over the deep
-      // middle. Drives clarity: shallow edges are almost glass.
-      depthAttr.push(THREE.MathUtils.clamp((y - terrainHeight(x, z)) / 1.6, 0, 1));
-    }
-    uvs.push(t, 0, t, 1);
     const c = Math.min(1, cascadeAt(t) * (0.85 + narrownessAt(t) * 0.15));
-    foamAttr.push(c, c);
+    for (let k = 0; k <= COLS; k++) {
+      const v = k / COLS;
+      const lat = (v * 2 - 1) * w;
+      positions.push(p.x + (bx / bl) * lat, y, p.z + (bz / bl) * lat);
+      uvs.push(t, v);
+      foamAttr.push(c);
+      // local half-width, so the shader can size ripples and the shore foam
+      // band in world units rather than across the normalized uv — the channel
+      // runs from ~3 to ~43 wide, and uv-space noise smears into stripes
+      widthAttr.push(w);
+      // Water depth: 0 at the shoreline -> 1 over the deep middle, driving the
+      // clarity gradient. Taken from the same analytic profile that carves the
+      // bed rather than by resampling terrainHeight, whose bank wobble made
+      // this jump from vertex to vertex.
+      const cross = Math.abs(v * 2 - 1);
+      depthAttr.push(THREE.MathUtils.clamp((bedDepth(cross) - 0.4) / 1.2, 0, 1));
+    }
     if (i < SEGS) {
-      const a = i * 2;
-      index.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+      const row = COLS + 1;
+      for (let k = 0; k < COLS; k++) {
+        const a = i * row + k;
+        // cross-channel edge first, then downstream: the other winding points
+        // the normals at the streambed and the whole surface gets back-face
+        // culled away
+        index.push(a, a + 1, a + row, a + row, a + 1, a + row + 1);
+      }
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -234,6 +254,7 @@ function buildWaterRibbon() {
   geo.setAttribute('aUv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setAttribute('aFoam', new THREE.Float32BufferAttribute(foamAttr, 1));
   geo.setAttribute('aDepth', new THREE.Float32BufferAttribute(depthAttr, 1));
+  geo.setAttribute('aWidth', new THREE.Float32BufferAttribute(widthAttr, 1));
   geo.setIndex(index);
   geo.computeVertexNormals();
 
@@ -249,9 +270,11 @@ function buildWaterRibbon() {
       attribute float aFoam;
       attribute vec2 aUv;
       attribute float aDepth;
+      attribute float aWidth;
       varying float vFoam;
       varying vec2 vUvS;
       varying float vDepth;
+      varying float vWidth;
       uniform float uTime;
     ` + shader.vertexShader.replace(
       '#include <begin_vertex>',
@@ -259,6 +282,7 @@ function buildWaterRibbon() {
        vFoam = aFoam;
        vUvS = aUv;
        vDepth = aDepth;
+       vWidth = aWidth;
        // churned surface on the cascades
        transformed.y += aFoam * 0.09 * sin(aUv.x * 400.0 + uTime * 6.0);`
     );
@@ -266,13 +290,31 @@ function buildWaterRibbon() {
       varying float vFoam;
       varying vec2 vUvS;
       varying float vDepth;
+      varying float vWidth;
       uniform float uTime;
       float gFoam = 0.0;
       float gAgit = 0.0;
-      float hashW(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      // Cross-channel noise frequencies were authored against the uv, which
+      // only held together while the channel was a near-constant ~14 units
+      // wide. CROSS() converts a uv-space frequency into the world-space one
+      // that matched at that reference width, so ripples keep their real size
+      // whether the water is a 4-unit chute or the 43-unit lake.
+      #define CROSS(f) (vUvS.y * vWidth * 2.0 * ((f) / 14.0))
+      // fract() first, before any multiply: uTime accumulates without bound, so
+      // after a minute or two the noise coordinate is in the hundreds and
+      // sin(dot(p, ...)) of that loses all float32 precision — the lattice
+      // degenerates and the surface breaks into hard-edged shards.
+      float hashW(vec2 p){
+        p = fract(p * vec2(0.3183099, 0.3678794) + vec2(0.1, 0.17));
+        p *= 17.0;
+        return fract(p.x * p.y * (p.x + p.y));
+      }
       float noiseW(vec2 p){
         vec2 i = floor(p), f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
+        // quintic rather than the usual smoothstep: the normal below is built
+        // from finite differences of this, and a merely C1 interpolant leaves a
+        // visible crease along every cell boundary once there is a specular on it
+        f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
         return mix(mix(hashW(i), hashW(i + vec2(1,0)), f.x),
                    mix(hashW(i + vec2(0,1)), hashW(i + vec2(1,1)), f.x), f.y);
       }
@@ -285,21 +327,26 @@ function buildWaterRibbon() {
         float v = vUvS.y;
         float crossW = abs(v * 2.0 - 1.0);
         // anisotropic ripple layers, all streaming downstream
-        float f1 = noiseW(vec2(u * 0.7 + uTime * 1.4, v * 10.0));
-        float f2 = noiseW(vec2(u * 1.8 + uTime * 3.2, v * 24.0 + 5.0));
-        float f3 = noiseW(vec2(u * 3.8 + uTime * 5.5, v * 48.0 + 13.0));
+        float f1 = noiseW(vec2(u * 0.7 + uTime * 1.4, CROSS(10.0)));
+        float f2 = noiseW(vec2(u * 1.8 + uTime * 3.2, CROSS(24.0) + 5.0));
+        // rotated domain: the fleck threshold below turns this into discrete
+        // specks, and on an axis-aligned lattice they line up into rows across
+        // the flow — plainly visible once the water is wide and calm
+        float f3 = noiseW(mat2(0.8, -0.6, 0.6, 0.8) * vec2(u * 3.8 + uTime * 5.5, CROSS(48.0) + 13.0));
         gAgit = clamp(0.35 + vFoam, 0.0, 1.0);
         // clear glassy water: pale over the shallows, teal over the deep middle
         vec3 deepC = vec3(0.17, 0.31, 0.28);
         vec3 shalC = vec3(0.48, 0.58, 0.52);
         vec3 wcol = mix(shalC, deepC, vDepth * (0.7 + 0.3 * f1));
         // cascade foam broken into long streaks by stretched noise
-        float streak = noiseW(vec2(u * 2.4 + uTime * 4.2, v * 14.0));
+        float streak = noiseW(vec2(u * 2.4 + uTime * 4.2, CROSS(14.0)));
         float casc = vFoam * smoothstep(0.25, 0.72, streak * 0.55 + f2 * 0.45);
         // streaming white flecks — sparse in the pools, dense in the rush
         float fleck = smoothstep(0.8 - vFoam * 0.25, 0.97, f2 * 0.5 + f3 * 0.5);
-        // broken foam line where the water meets the banks
-        float edge = smoothstep(0.74, 0.96, crossW) * smoothstep(0.35, 0.75, f3);
+        // broken foam line where the water meets the banks — a fixed ~1.8 unit
+        // band, not a fraction of the width, or the lake gets a 6-unit fringe
+        float shore = (1.0 - crossW) * vWidth;
+        float edge = smoothstep(1.82, 0.28, shore) * smoothstep(0.35, 0.75, f3);
         gFoam = clamp(casc * 1.25 + fleck * (0.2 + 0.6 * gAgit) + edge * 0.7, 0.0, 1.0);
         wcol = mix(wcol, vec3(0.96, 0.98, 0.96), gFoam);
         diffuseColor.rgb = wcol;
@@ -315,10 +362,12 @@ function buildWaterRibbon() {
         // streaming ripple bumps -> the sun glitter slides downstream
         float u = vUvS.x * 140.0;
         float v = vUvS.y;
-        float e = 0.22;
-        float n0 = noiseW(vec2(u * 2.1 + uTime * 2.8, v * 30.0));
-        float nx = noiseW(vec2((u + e) * 2.1 + uTime * 2.8, v * 30.0));
-        float nz = noiseW(vec2(u * 2.1 + uTime * 2.8, (v + e * 0.08) * 30.0));
+        // one epsilon, equal on both axes, so the gradient is not biased toward
+        // the downstream direction
+        float e = 0.46;
+        float n0 = noiseW(vec2(u * 2.1 + uTime * 2.8, CROSS(30.0)));
+        float nx = noiseW(vec2(u * 2.1 + e + uTime * 2.8, CROSS(30.0)));
+        float nz = noiseW(vec2(u * 2.1 + uTime * 2.8, CROSS(30.0) + e));
         vec3 bump = vec3(nx - n0, 0.0, nz - n0) * (1.6 + 2.2 * gAgit) * (1.0 - gFoam * 0.7);
         normal = normalize(normal + bump);
       }`
@@ -335,9 +384,8 @@ function buildWaterRibbon() {
         // sun sparkle riding the current — rotated noise domains so the
         // glints stay point-like instead of forming axis-aligned zigzags
         float su = vUvS.x * 140.0;
-        float sv = vUvS.y;
-        float sp  = noiseW(vec2(su * 2.6 + sv * 31.0 + uTime * 6.0, su * 1.1 - sv * 47.0));
-        float sp2 = noiseW(vec2(su * 1.9 - sv * 39.0 - uTime * 4.2, su * 2.3 + sv * 27.0 + 7.0));
+        float sp  = noiseW(vec2(su * 2.6 + CROSS(31.0) + uTime * 6.0, su * 1.1 - CROSS(47.0)));
+        float sp2 = noiseW(vec2(su * 1.9 - CROSS(39.0) - uTime * 4.2, su * 2.3 + CROSS(27.0) + 7.0));
         float glint = smoothstep(0.80, 0.97, sp * sp2 * 1.7);
         totalEmissiveRadiance += vec3(1.0, 1.0, 0.92) * glint * (0.25 + 0.85 * gAgit);
       }`
@@ -380,7 +428,11 @@ function buildBedRibbon() {
       const row = STEPS + 1;
       for (let k = 0; k < STEPS; k++) {
         const a = i * row + k;
-        index.push(a, a + row, a + 1, a + 1, a + row, a + row + 1);
+        // cross-channel edge first, then downstream. The other way round faces
+        // the triangles downward, and this whole ribbon — the sandy bed the
+        // clear water is supposed to read against — was being back-face culled
+        // and never drawn at all.
+        index.push(a, a + 1, a + row, a + row, a + 1, a + row + 1);
       }
     }
   }
