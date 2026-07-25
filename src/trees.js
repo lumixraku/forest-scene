@@ -3,7 +3,7 @@ import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometr
 import { applyCardWind, keepAuthoredNormals } from './wind.js';
 import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
-import { streamAt, levelAt, streamCurve } from './streamPath.js';
+import { streamAt, levelAt, streamCurve, inWater } from './streamPath.js';
 import {
   makePagodaBranchTexture, makeGinkgoBranchTexture, makeNeedleBranchTexture,
   makeSpruceTopTexture, makeBarkTexture,
@@ -124,7 +124,12 @@ const TREE_SCALE = 2;
 // thickens away from the water, and the opening camera position stays clear
 // so a random tree never spawns right in front of the initial view.
 function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
-  const trees = fixed.map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE }));
+  // the hand-placed framing trees get the same water test as the scattered ones:
+  // their coordinates were authored against a channel a few units wide, and the
+  // pools have since opened out far enough to swallow some of them
+  const trees = fixed
+    .filter((f) => !inWater(f.x, f.z, 1.2))
+    .map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE }));
   const camP = streamCurve.getPointAt(0.36);
   const camX = camP.x - 2, camZ = camP.z + 8;
 
@@ -140,6 +145,7 @@ function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
     if (Math.random() > keep) continue;
     const h = terrainHeight(x, z);
     if (h < levelAt(t) + 0.5) continue;
+    if (inWater(x, z, 1.2)) continue; // no trees standing in the pools
     trees.push({
       x, z,
       rot: Math.random() * Math.PI * 2,
