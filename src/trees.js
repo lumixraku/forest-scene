@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyCardWind, keepAuthoredNormals } from './wind.js';
+import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, streamCurve } from './streamPath.js';
 import {
@@ -171,12 +172,16 @@ function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
   return g;
 }
 
+// Trunks/sticks/spires are only a few percent of the frame's triangles, so they
+// stay one mesh per species — chunking them would cost more in draw calls than
+// it saves in geometry. computeBoundingSphere() replaces the old
+// `frustumCulled = false`: instance-aware bounds mean culling is correct, so
+// there's no reason to opt out of it.
 function addTrunks(scene, trees, geo, barkTex) {
   const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95, metalness: 0 });
   const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  mesh.frustumCulled = false;
   const dummy = new THREE.Object3D();
   trees.forEach((tr, i) => {
     dummy.position.set(tr.x, terrainHeight(tr.x, tr.z) - 0.25, tr.z);
@@ -186,6 +191,7 @@ function addTrunks(scene, trees, geo, barkTex) {
     mesh.setMatrixAt(i, dummy.matrix);
   });
   mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingSphere();
   scene.add(mesh);
 }
 
@@ -198,7 +204,6 @@ function addDeadSticks(scene, trees, barkTex) {
   const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1, metalness: 0 });
   const mesh = new THREE.InstancedMesh(geo, mat, trees.length * PER);
   mesh.castShadow = true;
-  mesh.frustumCulled = false;
   const dummy = new THREE.Object3D();
   let m = 0;
   for (const tr of trees) {
@@ -216,6 +221,7 @@ function addDeadSticks(scene, trees, barkTex) {
     }
   }
   mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingSphere();
   scene.add(mesh);
 }
 
@@ -289,17 +295,13 @@ function scatterBranches(scene, trees, geo, tex, p) {
     const t = p.tiers === 1 ? 0 : i / (p.tiers - 1);
     counts.push(Math.max(3, Math.round(p.branches * (1 - t * 0.4))));
   }
-  const perTree = counts.reduce((a, b) => a + b, 0);
   const mat = foliageMaterial(tex, { windStrength: 0.08 });
-  const mesh = new THREE.InstancedMesh(geo, mat, trees.length * perTree);
-  mesh.castShadow = true;
-  mesh.frustumCulled = false;
-  mesh.customDepthMaterial = depthMaterial(tex, 0.36);
 
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
-  let m = 0;
+  const buckets = new Map();
   for (const tr of trees) {
+    const bucket = bucketFor(buckets, tr.x, tr.z);
     const yBase = terrainHeight(tr.x, tr.z);
     for (let i = 0; i < p.tiers; i++) {
       const t = p.tiers === 1 ? 0 : i / (p.tiers - 1);
@@ -321,20 +323,23 @@ function scatterBranches(scene, trees, geo, tex, p) {
         // the branch length; plain crossed cards keep z at 1
         dummy.scale.set(L, L * (0.85 + Math.random() * 0.35) * (p.yScale ?? 1), p.fan ? L : 1);
         dummy.updateMatrix();
-        mesh.setMatrixAt(m, dummy.matrix);
+        bucket.mats.push(dummy.matrix.clone());
         col.setHSL(
           p.hue + (Math.random() - 0.5) * 0.02,
           0.3 + Math.random() * 0.15,
           p.light + t * 0.07 + Math.random() * 0.09
         );
-        mesh.setColorAt(m, col);
-        m++;
+        bucket.cols.push(col.clone());
       }
     }
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  scene.add(mesh);
+  // Branch cards are the heaviest thing in the scene (~25k instances, a third
+  // of every frame's triangles), and a single per-species mesh spanning the
+  // whole field can never be culled — so they are chunked for real culling.
+  addChunkedInstances(scene, buckets, geo, mat, {
+    castShadow: true,
+    depthMat: depthMaterial(tex, 0.36),
+  });
 }
 
 // Three crossed vertical spire cards capping each conifer.
@@ -349,7 +354,6 @@ function addSpires(scene, trees, tex, { crownTop, hue, light }) {
   const mat = foliageMaterial(tex, { windStrength: 0.1, axis: 'y' });
   const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
   mesh.castShadow = true;
-  mesh.frustumCulled = false;
   mesh.customDepthMaterial = depthMaterial(tex, 0.36);
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
@@ -366,6 +370,7 @@ function addSpires(scene, trees, tex, { crownTop, hue, light }) {
   });
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.computeBoundingSphere();
   scene.add(mesh);
 }
 

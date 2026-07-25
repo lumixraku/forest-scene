@@ -26,11 +26,28 @@ import { streamCurve, levelAt } from './streamPath.js';
 })();
 
 // ---- renderer ----
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+// MSAA is inert here: EffectComposer renders the scene into its own render
+// target, so a multisampled default framebuffer would only ever antialias
+// OutputPass's fullscreen quad. Asking for it allocates a second full-size
+// buffer that never antialiases anything.
+// preserveDrawingBuffer exists only to grab canvas.toDataURL() for the README
+// screenshots, and it keeps the browser from discarding the backbuffer every
+// frame — so it's opt-in via ?capture instead of always on.
+const CAPTURE = new URLSearchParams(location.search).has('capture');
+// A retina dpr of 2 shades 4x the fragments of dpr 1. 1.5 keeps the foliage
+// and water sparkle crisp for a bit over half the per-pixel cost.
+const MAX_PIXEL_RATIO = 1.5;
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: CAPTURE });
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// The sun never moves and nothing is repositioned on the CPU — the only motion
+// is the wind vertex shader, and its sway is far under one texel of a 1024 map
+// stretched over the whole ~360m field. So the shadow map is rendered once at
+// startup instead of re-drawing ~860k triangles every single frame.
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.32;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
