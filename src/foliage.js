@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyWind, keepAuthoredNormals } from './wind.js';
 import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
-import { streamCurve, streamAt, levelAt, halfWidthAt } from './streamPath.js';
+import { streamCurve, streamAt, levelAt, halfWidthAt, inWater } from './streamPath.js';
 import {
   makeFlowerSpikeTexture, makeMeadowFlowerTexture,
   makeFlowerBushTexture, makeSedgeTexture, makeLeafFillTexture,
@@ -62,6 +62,7 @@ export function createFoliage(scene) {
         const z = centre.z + (Math.random() - 0.5) * 3.2;
         const h = terrainHeight(x, z);
         if (h < levelAt(streamAt(x, z).t) + 0.1) continue;
+        if (inWater(x, z, 0.1)) continue;
         placements[si].push({ x, z, h });
       }
     }
@@ -134,6 +135,7 @@ export function createFoliage(scene) {
         const z = cz + (Math.random() - 0.5) * 7;
         const h = terrainHeight(x, z);
         if (h < levelAt(streamAt(x, z).t) + 0.4) continue;
+        if (inWater(x, z, 0.3)) continue;
         positions.push({ x, z, h });
       }
     }
@@ -176,6 +178,7 @@ export function createFoliage(scene) {
       if (Math.random() > THREE.MathUtils.clamp(1.5 - sd / 55, 0.05, 1)) continue;
       const h = terrainHeight(x, z);
       if (h < levelAt(t) + 0.35) continue;
+      if (inWater(x, z, 0.3)) continue;
       dummy.position.set(x, h + 0.15, z);
       dummy.rotation.set(0, Math.random() * Math.PI, 0);
       dummy.scale.setScalar(0.7 + Math.random() * 0.8);
@@ -200,9 +203,10 @@ export function createFoliage(scene) {
       const x = (Math.random() - 0.5) * 270;
       const z = (Math.random() - 0.5) * 270;
       const { d: sd, t } = streamAt(x, z);
-      if (sd < halfWidthAt(t) + 2 || sd > 90) continue;
+      if (sd > 90) continue;
       const h = terrainHeight(x, z);
       if (h < levelAt(t) + 0.4) continue;
+      if (inWater(x, z, 0.8)) continue;
       spots.push({ x, z, h, s: 0.6 + Math.random() * 0.9 });
     }
 
