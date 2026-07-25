@@ -151,8 +151,15 @@ function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
 
 // Thick tapered trunk with knobbly radial noise and a root flare spreading
 // into the ground; optional bend curves the whole stem (broadleaf).
+//
+// The stem is open-ended and narrows to a point at the very top. A plain
+// cylinder is a trapezoid in profile, so its flat top cap sat exposed above the
+// crown and read as a sawn-off stump — most obvious on pagoda and ginkgo, the
+// two species with no spire cap over the topmost branch tier, and only visible
+// from canopy height (from the ground the crown hides it). Both caps can go:
+// the base is buried 0.25 below the terrain, and the top is now a tip.
 function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
-  const g = new THREE.CylinderGeometry(topR, botR, h, 14, 8, false);
+  const g = new THREE.CylinderGeometry(topR, botR, h, 14, 10, true);
   g.translate(0, h / 2, 0);
   const pos = g.attributes.position;
   const v = new THREE.Vector3();
@@ -164,8 +171,11 @@ function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
     const ang = Math.atan2(v.z, v.x);
     const lump = 1 + (Math.sin(ang * 3 + v.y * 0.8) * 0.5 + Math.sin(ang * 5 + 1.7 + v.y * 0.35) * 0.5) * 0.07;
     const fl = t < 0.08 ? 1 + (0.08 - t) * flare * (0.55 + 0.45 * Math.sin(ang * 5 + 1.3)) : 1;
-    pos.setX(i, v.x * lump * fl + bx * t * t);
-    pos.setZ(i, v.z * lump * fl + bz * t * t);
+    // radius fades out over the top stretch so the stem ends as a tip; the bend
+    // offset shifts the axis itself, so it must not be tapered with it
+    const tip = t > 0.82 ? Math.max(0, (1 - t) / 0.18) : 1;
+    pos.setX(i, v.x * lump * fl * tip + bx * t * t);
+    pos.setZ(i, v.z * lump * fl * tip + bz * t * t);
   }
   pos.needsUpdate = true;
   g.computeVertexNormals();
