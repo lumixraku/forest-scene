@@ -428,7 +428,11 @@ function buildBedRibbon() {
       const row = STEPS + 1;
       for (let k = 0; k < STEPS; k++) {
         const a = i * row + k;
-        index.push(a, a + row, a + 1, a + 1, a + row, a + row + 1);
+        // cross-channel edge first, then downstream. The other way round faces
+        // the triangles downward, and this whole ribbon — the sandy bed the
+        // clear water is supposed to read against — was being back-face culled
+        // and never drawn at all.
+        index.push(a, a + 1, a + row, a + row, a + 1, a + row + 1);
       }
     }
   }
