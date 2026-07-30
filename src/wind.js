@@ -58,6 +58,38 @@ export function applyCardWind(material, { strength = 0.1, freq = 1.5, axis = 'x'
 }
 
 /**
+ * Wind for solid canopy blobs. The whole blob is displaced rigidly, so every
+ * blob of one crown — they all sit at nearly the same x/z and therefore share a
+ * phase — sways as a single mass instead of shearing apart. The offset is
+ * divided by the instance scale because `transformed` is still in local space:
+ * without that, a 6m canopy blob would sway ten times as far as a 0.6m one.
+ */
+export function applyCanopyWind(material, { strength = 0.12, freq = 1.15 } = {}) {
+  material.userData.wind = { uniforms: null };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    material.userData.wind.uniforms = shader.uniforms;
+    shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       {
+         float ph = instanceMatrix[3].x * 0.5 + instanceMatrix[3].z * 0.41;
+         float sc = max(length(instanceMatrix[0].xyz), 1e-3);
+         float sway = (sin(uTime * ${freq.toFixed(3)} + ph)
+                     + sin(uTime * ${(freq * 2.3).toFixed(3)} + ph * 2.7) * 0.3)
+                    * ${strength.toFixed(4)} / sc;
+         transformed.x += sway;
+         transformed.z += sway * 0.6;
+       }`
+    );
+  };
+  material.customProgramCacheKey = () => `canopywind-${strength}-${freq}`;
+  windMaterials.push(material);
+  return material;
+}
+
+/**
  * For double-sided foliage cards / grass blades with hand-authored normals:
  * three.js flips the normal on backfaces, which randomly turns cards facing
  * the camera pitch black. Restore the authored normal on both faces.

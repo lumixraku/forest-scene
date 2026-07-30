@@ -402,6 +402,45 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
   return toTexture(c);
 }
 
+// Fully opaque leaf surface for the solid crown shells. No alpha: the crown's
+// silhouette is its geometry, so this only has to supply leaf GRAIN.
+//
+// It is deliberately almost flat. The first version baked big soft light/dark
+// lobes in here to give the crown volume, and at crown scale those lobes read as
+// camouflage blotches — a stretched military pattern wrapped around a cone. In
+// the Genshin model the texture stays nearly a single tone and ALL the volume
+// comes from the cel shader's terminator (see toon.js): warm lit plateau, cool
+// sky-lit shadow, hard edge between. So the marks here are small, low-contrast,
+// and dense enough to vanish into an even tone from more than a few metres.
+//
+// Seamless in u (the lathe wraps u around the axis) by stamping every mark at x±S.
+export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038']) {
+  const S = 512;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = colors[1];
+  ctx.fillRect(0, 0, S, S);
+
+  const wrap = (fn) => { for (const dx of [-S, 0, S]) { ctx.save(); ctx.translate(dx, 0); fn(); ctx.restore(); } };
+
+  // Leaf grain: small strokes in the three tones, no large-scale structure at
+  // all. Low alpha keeps any single stroke from becoming a visible speck.
+  ctx.globalAlpha = 0.5;
+  for (let i = 0; i < 4200; i++) {
+    const x = Math.random() * S;
+    const y = Math.random() * S;
+    const ang = Math.random() * Math.PI * 2;
+    const len = 5 + Math.random() * 8;
+    wrap(() => drawLeaf(ctx, x, y, ang, len, colors, 0.55));
+  }
+  ctx.globalAlpha = 1;
+
+  const tex = toTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; // u is seamless; v is clamped
+  return tex;
+}
+
 // One whole spruce branch drawn side-on: a bezier stem with alternating side
 // twigs, every twig fringed with curved needle strokes in three green tones.
 export function makeNeedleBranchTexture(colors = ['#24421f', '#3a5c2a', '#5c7c3a']) {

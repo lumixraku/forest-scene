@@ -9,6 +9,7 @@ import { createFoliage } from './foliage.js';
 import { createParticles } from './particles.js';
 import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
+import { toonify } from './toon.js';
 import { updateWind } from './wind.js';
 import { streamCurve, levelAt } from './streamPath.js';
 
@@ -83,6 +84,13 @@ scene.add(stream.group);
 
 // ---- dust + birds ----
 const particles = createParticles(scene, new THREE.Vector2(0, -16));
+
+// ---- cel shading ----
+// Must run after every scene module, since it patches the materials they built.
+// This is where the crowns get their volume: the solid canopy texture is nearly
+// one flat tone on purpose, and the warm-lit / cool-shadow split with a hard
+// terminator is what turns each shell back into a readable form.
+toonify(scene);
 
 // ---- controls: free exploration ----
 const controls = new OrbitControls(camera, renderer.domElement);
