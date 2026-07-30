@@ -24,21 +24,40 @@ const LIT = new Set(['MeshStandardMaterial', 'MeshPhysicalMaterial', 'MeshLamber
 
 export function toonify(scene, opts = {}) {
   const p = {
-    // where the terminator sits, in "how sun-dominated is this pixel" terms
-    edge: 0.26,
-    width: 0.04,
+    // Where the terminator sits, in "how sun-dominated is this pixel" terms.
+    // The sky fill is much stronger now than when these were tuned, so `t` runs
+    // lower across the whole frame and the edge has to come down with it or the
+    // lit plateau shrinks to the few surfaces facing the sun dead-on.
+    edge: 0.2,
+    // Wider than a knife edge. A 0.04 terminator on every leaf mass is what tips
+    // the look from painterly into flat cartoon; 0.1 still separates the two
+    // tones but lets the turn read as a form turning.
+    width: 0.1,
     // Shadow side: cool and clearly readable. It is LIFTED, not darkened — in
     // this style the dark half of a tree is a mid-blue-green you can still read
     // every leaf in, which is the opposite of a photographic shadow.
-    shadow: new THREE.Color('#a4c0ec'),
-    shadowLevel: 1.3,
-    // lit side: warm, and flattened onto a plateau
-    warm: new THREE.Color('#fff2d2'),
-    litBoost: 1.22,
-    rim: 0.75,
-    rimPower: 2.8,
-    rimColor: new THREE.Color('#eaf6ff'),
-    sat: 1.42,
+    // Cool, but not as blue as it was. #9fb8e8 has enough chroma that it turns
+    // brown into violet, and since a trunk's whole value comes from this term
+    // every trunk in the frame read as a cold purple bar. Pulling the chroma
+    // down keeps the crowns' shadow side reading as sky-lit without repainting
+    // the wood.
+    shadow: new THREE.Color('#b4bfdb'),
+    // Lifted from 1.25. A trunk stands inside its own crown's cast shadow, so it
+    // receives no sun at all and its entire value comes from this term — at 1.25
+    // the trunks read as black bars between the crowns.
+    shadowLevel: 1.5,
+    // lit side: warm gold, matching the low sun rather than a white noon one
+    warm: new THREE.Color('#ffe6b8'),
+    litBoost: 1.16,
+    // Rim, warm now instead of cool white. With the sun low and ahead this is
+    // doing backlight — the gold edge on a crown against the sky — so a cool rim
+    // fought the light direction and read as a drawn outline.
+    rim: 0.62,
+    rimPower: 2.4,
+    rimColor: new THREE.Color('#ffdca4'),
+    // 1.42 was pushing the greens to poster paint. The colour now comes from the
+    // warm/cool light split, which does not need help from a saturation boost.
+    sat: 1.15,
     ...opts,
   };
 

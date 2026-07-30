@@ -36,22 +36,30 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 // Everything is InstancedMesh — 2-4 draw calls per species.
 export function createTrees(scene) {
   const pagodaBark = makeBarkTexture({ base: '#8a8172', crack: 'rgba(34,30,24,1)', ridge: 'rgba(202,194,176,1)', knots: false });
-  const pineBark = makeBarkTexture({ base: '#4f4338', crack: 'rgba(22,18,14,1)', ridge: 'rgba(120,104,84,1)' });
-  const highBark = makeBarkTexture({ base: '#54453a', crack: 'rgba(28,20,14,1)', ridge: 'rgba(140,110,80,1)', knots: false });
-  const spruceBark = makeBarkTexture({ base: '#453a32', crack: 'rgba(18,14,10,1)', ridge: 'rgba(108,92,74,1)' });
+  // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
+  // it is nearly always on the shadow side of the terminator; at the old values
+  // (#4f4338 / #453a32) every trunk in the frame collapsed into a black
+  // silhouette and the forest read as bars rather than as wood.
+  const pineBark = makeBarkTexture({ base: '#77604c', crack: 'rgba(40,32,24,1)', ridge: 'rgba(158,136,110,1)' });
+  const highBark = makeBarkTexture({ base: '#7d6550', crack: 'rgba(44,32,22,1)', ridge: 'rgba(174,142,106,1)', knots: false });
+  const spruceBark = makeBarkTexture({ base: '#6b5647', crack: 'rgba(32,24,18,1)', ridge: 'rgba(142,120,96,1)' });
   // ginkgo bark: grey-brown furrowed wood
-  const ginkgoBark = makeBarkTexture({ base: '#6e5b46', crack: 'rgba(30,22,15,1)', ridge: 'rgba(158,136,108,1)', knots: false });
+  const ginkgoBark = makeBarkTexture({ base: '#8d7659', crack: 'rgba(42,32,22,1)', ridge: 'rgba(186,164,132,1)', knots: false });
 
   // One canopy texture per palette, shared by every tree of that species.
   // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
   // leaf clumps are real holes and the sky reads through the canopy. See
   // makeCanopyTexture — the shell geometry still owns the silhouette.
+  // Lighter and warmer than the old noon greens. Under a low gold sun a deep
+  // blue-green crown just goes black on the shadow side, and the frame fills with
+  // dark holes; these sit high enough in value that the sky fill can still lift
+  // the shadow face into a readable colour.
   const PIERCE = { pierce: true };
-  const pineTex = makeCanopyTexture(['#25401f', '#3b5c2b', '#5c7f3c'], PIERCE);
-  const highTex = makeCanopyTexture(['#2b4a22', '#47662e', '#719049'], PIERCE);
-  const darkTex = makeCanopyTexture(['#1c3320', '#2f4b2a', '#496b39'], PIERCE);
-  const ginkgoTex = makeCanopyTexture(['#8d6a12', '#c69a22', '#e8c74a'], PIERCE);
-  const pagodaTex = makeCanopyTexture(['#31501f', '#4e7530', '#7ca343'], PIERCE);
+  const pineTex = makeCanopyTexture(['#3d5a2a', '#587a38', '#7d9f4a'], PIERCE);
+  const highTex = makeCanopyTexture(['#44652c', '#628539', '#8aac52'], PIERCE);
+  const darkTex = makeCanopyTexture(['#33502c', '#4b6b35', '#6b8c45'], PIERCE);
+  const ginkgoTex = makeCanopyTexture(['#a87c18', '#d9a92c', '#f4d558'], PIERCE);
+  const pagodaTex = makeCanopyTexture(['#456a28', '#638c38', '#8bb14c'], PIERCE);
 
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
@@ -63,7 +71,10 @@ export function createTrees(scene) {
   addCanopy(scene, pagodas, pagodaTex, {
     crownBase: 3.4, crownTop: 12.4, radius: 3.4,
     profile: 'umbrella',
-    hue: 0.24, light: 0.4,
+    // These tints MULTIPLY the canopy texture, so a low `light` cancels out the
+    // lighter palettes above. Raised across every species, and the hues pulled
+    // toward yellow-green — under a gold sun a blue-green crown reads as cold.
+    hue: 0.22, light: 0.62,
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
@@ -72,7 +83,7 @@ export function createTrees(scene) {
   addCanopy(scene, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
     profile: 'cone',
-    hue: 0.3, light: 0.34,
+    hue: 0.26, light: 0.58,
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
@@ -82,7 +93,7 @@ export function createTrees(scene) {
   addCanopy(scene, highPines, highTex, {
     crownBase: 5.6, crownTop: 15.8, radius: 2.9,
     profile: 'dome',
-    hue: 0.27, light: 0.35,
+    hue: 0.24, light: 0.6,
   });
 
   // ---- ginkgo — pale bent trunks near the banks, golden domes ----
@@ -98,7 +109,7 @@ export function createTrees(scene) {
   addCanopy(scene, ginkgos, ginkgoTex, {
     crownBase: 2.6, crownTop: 9.6, radius: 2.7,
     profile: 'dome',
-    hue: 0.115, light: 0.46,
+    hue: 0.12, light: 0.66,
   });
 
   // ---- spruce — darkest, tallest cones on the background slopes ----
@@ -107,7 +118,7 @@ export function createTrees(scene) {
   addCanopy(scene, spruces, darkTex, {
     crownBase: 1.8, crownTop: 18.4, radius: 2.8,
     profile: 'cone',
-    hue: 0.32, light: 0.32,
+    hue: 0.28, light: 0.54,
   });
 }
 
