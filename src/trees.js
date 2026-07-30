@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { applyCanopyWind } from './wind.js';
+import { applyCanopyWind, keepAuthoredNormals } from './wind.js';
 import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, streamCurve, inWater } from './streamPath.js';
@@ -43,11 +43,15 @@ export function createTrees(scene) {
   const ginkgoBark = makeBarkTexture({ base: '#6e5b46', crack: 'rgba(30,22,15,1)', ridge: 'rgba(158,136,108,1)', knots: false });
 
   // One canopy texture per palette, shared by every tree of that species.
-  const pineTex = makeCanopyTexture(['#25401f', '#3b5c2b', '#5c7f3c']);
-  const highTex = makeCanopyTexture(['#2b4a22', '#47662e', '#719049']);
-  const darkTex = makeCanopyTexture(['#1c3320', '#2f4b2a', '#496b39']);
-  const ginkgoTex = makeCanopyTexture(['#8d6a12', '#c69a22', '#e8c74a']);
-  const pagodaTex = makeCanopyTexture(['#31501f', '#4e7530', '#7ca343']);
+  // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
+  // leaf clumps are real holes and the sky reads through the canopy. See
+  // makeCanopyTexture — the shell geometry still owns the silhouette.
+  const PIERCE = { pierce: true };
+  const pineTex = makeCanopyTexture(['#25401f', '#3b5c2b', '#5c7f3c'], PIERCE);
+  const highTex = makeCanopyTexture(['#2b4a22', '#47662e', '#719049'], PIERCE);
+  const darkTex = makeCanopyTexture(['#1c3320', '#2f4b2a', '#496b39'], PIERCE);
+  const ginkgoTex = makeCanopyTexture(['#8d6a12', '#c69a22', '#e8c74a'], PIERCE);
+  const pagodaTex = makeCanopyTexture(['#31501f', '#4e7530', '#7ca343'], PIERCE);
 
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
@@ -293,11 +297,27 @@ function makeCrownGeo(profileName) {
 // species, dealt out round-robin, so neighbouring trees are not clones.
 function addCanopy(scene, trees, tex, p) {
   const variants = [makeCrownGeo(p.profile), makeCrownGeo(p.profile), makeCrownGeo(p.profile)];
-  // Opaque and single-sided: the silhouette is geometry now, so there is no
-  // alpha-test discard and no double-sided draw — a closed crown costs less per
-  // pixel than the cloud of cards it replaces, and needs no custom depth material.
-  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, metalness: 0 });
+  // Openwork, so alphaTest + DoubleSide: without the back faces you see straight
+  // through the holes to nothing and the crown reads as an empty husk; with them
+  // the shell's far wall shows through its own gaps, which is what gives the mass
+  // depth. keepAuthoredNormals stops three.js flipping the normal on those back
+  // faces and turning them black.
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex,
+    alphaTest: 0.42,
+    side: THREE.DoubleSide,
+    roughness: 0.95,
+    metalness: 0,
+  });
   applyCanopyWind(mat, { strength: 0.13, freq: 1.1 });
+  keepAuthoredNormals(mat);
+  // Shadows must respect the holes too, or an openwork crown casts a solid
+  // ellipse on the ground and gives the whole trick away.
+  const depthMat = new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking,
+    map: tex,
+    alphaTest: 0.42,
+  });
 
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
@@ -326,7 +346,11 @@ function addCanopy(scene, trees, tex, p) {
   // Chunked for the same reason the branch cards were: one field-wide mesh has
   // field-wide bounds and can never be frustum culled.
   variants.forEach((geo, i) => {
-    addChunkedInstances(scene, buckets[i], geo, mat, { castShadow: true, receiveShadow: true });
+    addChunkedInstances(scene, buckets[i], geo, mat, {
+      castShadow: true,
+      receiveShadow: true,
+      depthMat,
+    });
   });
 }
 

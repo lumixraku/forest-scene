@@ -414,27 +414,52 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
 // and dense enough to vanish into an even tone from more than a few metres.
 //
 // Seamless in u (the lathe wraps u around the axis) by stamping every mark at x±S.
-export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038']) {
+//
+// `pierce` turns the sheet into openwork: the leaves are drawn on a TRANSPARENT
+// ground instead of a filled one, so the gaps between leaf clumps become real
+// holes and the sky reads through the crown. The holes are deliberately
+// clump-scale, not per-leaf — pinprick alpha at crown distance is just aliasing
+// noise, whereas gaps the size of a leaf cluster give the mass its depth. The
+// caller must pair this with alphaTest + DoubleSide, or the shell's far wall
+// disappears and the crown reads as a hollow husk.
+export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false } = {}) {
   const S = 512;
   const c = canvas(S, S);
   const ctx = c.getContext('2d');
 
-  ctx.fillStyle = colors[1];
-  ctx.fillRect(0, 0, S, S);
-
   const wrap = (fn) => { for (const dx of [-S, 0, S]) { ctx.save(); ctx.translate(dx, 0); fn(); ctx.restore(); } };
 
-  // Leaf grain: small strokes in the three tones, no large-scale structure at
-  // all. Low alpha keeps any single stroke from becoming a visible speck.
-  ctx.globalAlpha = 0.5;
-  for (let i = 0; i < 4200; i++) {
-    const x = Math.random() * S;
-    const y = Math.random() * S;
-    const ang = Math.random() * Math.PI * 2;
-    const len = 5 + Math.random() * 8;
-    wrap(() => drawLeaf(ctx, x, y, ang, len, colors, 0.55));
+  if (!pierce) {
+    ctx.fillStyle = colors[1];
+    ctx.fillRect(0, 0, S, S);
+    // Leaf grain: small strokes in the three tones, no large-scale structure at
+    // all. Low alpha keeps any single stroke from becoming a visible speck.
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < 4200; i++) {
+      wrap(() => drawLeaf(ctx, Math.random() * S, Math.random() * S,
+        Math.random() * Math.PI * 2, 5 + Math.random() * 8, colors, 0.55));
+    }
+    ctx.globalAlpha = 1;
+  } else {
+    // Rosettes of leaves around scattered centres. Coverage is the whole game:
+    // too dense and the holes close up into the solid sheet again, too sparse and
+    // the crown turns to lace and stops reading as a mass.
+    const CLUMPS = 132;
+    for (let i = 0; i < CLUMPS; i++) {
+      const cx = Math.random() * S;
+      const cy = Math.random() * S;
+      const cr = 15 + Math.random() * 17;
+      const leaves = 16 + ((Math.random() * 14) | 0);
+      wrap(() => {
+        for (let k = 0; k < leaves; k++) {
+          const a = Math.random() * Math.PI * 2;
+          const r = Math.sqrt(Math.random()) * cr;
+          drawLeaf(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r,
+            a + (Math.random() - 0.5) * 1.4, 8 + Math.random() * 9, colors, 0.6);
+        }
+      });
+    }
   }
-  ctx.globalAlpha = 1;
 
   const tex = toTexture(c);
   tex.wrapS = THREE.RepeatWrapping; // u is seamless; v is clamped
