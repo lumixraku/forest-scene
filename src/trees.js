@@ -61,11 +61,15 @@ export function createTrees(scene) {
   // internal range is narrow — the volume comes from the lighting split between
   // one crown's lit and shadow faces, not from dark leaves inside the texture.
   const PIERCE = { pierce: true };
-  const pineTex = makeCanopyTexture(['#6f9243', '#84a850', '#9cc061'], PIERCE);
-  const highTex = makeCanopyTexture(['#79994a', '#8fb057', '#a7c76a'], PIERCE);
-  const darkTex = makeCanopyTexture(['#5f8442', '#75994e', '#8db35f'], PIERCE);
+  // Hues pulled back toward true green. The previous set sat around 80-90 degrees
+  // — yellow-green — which under a warm sun left the whole canopy the same family
+  // as the gold ginkgos, so nothing in the frame read as green and the golds
+  // stopped being accents. These sit nearer 100 degrees and keep the value lift.
+  const pineTex = makeCanopyTexture(['#5c8f45', '#6ea451', '#86bc63'], PIERCE);
+  const highTex = makeCanopyTexture(['#67974a', '#7cad58', '#94c56b'], PIERCE);
+  const darkTex = makeCanopyTexture(['#4d8043', '#63954f', '#7bad60'], PIERCE);
   const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
-  const pagodaTex = makeCanopyTexture(['#74994a', '#8bb057', '#a3c869'], PIERCE);
+  const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
 
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
@@ -82,7 +86,7 @@ export function createTrees(scene) {
     // authored in the texture, then multiplied back down to dark here. `light`
     // now sits near 1 and the saturation range is narrow, so the tint separates
     // one tree from its neighbour without dimming any of them.
-    hue: 0.22, sat: 0.22, light: 0.9,
+    hue: 0.27, sat: 0.22, light: 0.9,
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
@@ -91,7 +95,7 @@ export function createTrees(scene) {
   addCanopy(scene, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
     profile: 'cone',
-    hue: 0.25, sat: 0.24, light: 0.88,
+    hue: 0.29, sat: 0.24, light: 0.88,
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
@@ -101,7 +105,7 @@ export function createTrees(scene) {
   addCanopy(scene, highPines, highTex, {
     crownBase: 5.6, crownTop: 15.8, radius: 2.9,
     profile: 'dome',
-    hue: 0.23, sat: 0.22, light: 0.92,
+    hue: 0.28, sat: 0.22, light: 0.92,
   });
 
   // ---- ginkgo — pale bent trunks near the banks, golden domes ----
@@ -132,7 +136,7 @@ export function createTrees(scene) {
     // The background species, so it stays the coolest and slightly the deepest of
     // the five — but only slightly. This is the one that used to turn the far
     // slopes into a black wall.
-    hue: 0.28, sat: 0.24, light: 0.84,
+    hue: 0.31, sat: 0.24, light: 0.84,
   });
 }
 
@@ -327,9 +331,14 @@ function addCanopy(scene, trees, tex, p) {
   // the shell's far wall shows through its own gaps, which is what gives the mass
   // depth. keepAuthoredNormals stops three.js flipping the normal on those back
   // faces and turning them black.
+  // alphaTest is low on purpose. At 0.42 it cut every partly-covered texel — the
+  // soft edge of each painted leaf — so crown surfaces came out mottled like
+  // lichen and the silhouette shed loose specks. At 0.12 only the genuinely empty
+  // ground between clusters is discarded, which is the openwork the shell wants,
+  // and the leaf edges stay whole.
   const mat = new THREE.MeshStandardMaterial({
     map: tex,
-    alphaTest: 0.42,
+    alphaTest: 0.12,
     side: THREE.DoubleSide,
     roughness: 0.95,
     metalness: 0,
@@ -344,7 +353,9 @@ function addCanopy(scene, trees, tex, p) {
   const depthMat = new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking,
     map: tex,
-    alphaTest: 0.42,
+    // must match the colour material's threshold, or the shadow disagrees with
+    // the crown that casts it
+    alphaTest: 0.12,
   });
 
   const dummy = new THREE.Object3D();

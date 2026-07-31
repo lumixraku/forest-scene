@@ -190,8 +190,12 @@ function drawLeaf(ctx, x, y, ang, len, colors, widthK = 0.42) {
     ctx.lineTo(tx, ty);
     ctx.stroke();
   }
-  if (Math.random() < 0.2) {
-    ctx.strokeStyle = 'rgba(214,232,150,0.5)';
+  // Edge highlight. Rarer and much softer than it was: at 1-in-5 leaves and 0.5
+  // alpha these pale strokes read as white specks scattered over the crowns
+  // rather than as sheen, and specks are what the whole solid-crown effort was
+  // meant to remove.
+  if (Math.random() < 0.08) {
+    ctx.strokeStyle = 'rgba(214,232,150,0.22)';
     ctx.lineWidth = 1.1;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -460,14 +464,15 @@ export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { 
     //
     // Coverage has to stay high enough that the clusters overlap into a mostly
     // solid sheet and only occasionally leave a gap. The alpha cut applies at the
-    // silhouette too, so sparse clusters tear the shell's own outline into
-    // confetti: the silhouette belongs to the geometry, and alpha's job here is a
-    // few sky gaps inside an intact mass.
-    const CLUMPS = 232;
+    // silhouette too, so sparse clusters tear the shell's own outline into ripped
+    // tissue paper — which is the original "too messy" complaint coming back at a
+    // smaller scale. The silhouette belongs to the geometry; alpha's job here is
+    // a few sky gaps INSIDE an intact mass, so err on the dense side.
+    const CLUMPS = 520;
     for (let i = 0; i < CLUMPS; i++) {
       const cx = Math.random() * S;
       const cy = Math.random() * S;
-      const cr = 30 + Math.random() * 26;
+      const cr = 26 + Math.random() * 22;
       const leaves = 30 + ((Math.random() * 20) | 0);
       wrap(() => {
         for (let k = 0; k < leaves; k++) {
