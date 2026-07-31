@@ -58,6 +58,10 @@ export function toonify(scene, opts = {}) {
     // 1.42 was pushing the greens to poster paint. The colour now comes from the
     // warm/cool light split, which does not need help from a saturation boost.
     sat: 1.15,
+    // Minimum fraction of a surface's own albedo that survives with no light on
+    // it at all. 0 for everything by default — an unlit rock SHOULD go dark. The
+    // canopy overrides it (see below) because leaves are translucent.
+    floor: 0,
     ...opts,
   };
 
@@ -67,7 +71,14 @@ export function toonify(scene, opts = {}) {
     for (const mat of mats) {
       if (done.has(mat) || !LIT.has(mat.type)) continue;
       done.add(mat);
-      patch(mat, p);
+      // Leaves are translucent: a leaf with the sun behind it glows rather than
+      // going black, and the inner wall of a pierced crown is exactly that case —
+      // it faces away from the key and would otherwise be lit by the sky term
+      // alone. `floor` stands in for the transmission, keeping those surfaces at a
+      // mid tone. Measured effect on the frame's near-black share is small (~0.5
+      // points); it earns its place on the near crowns, where the alternative is
+      // dark pits between the leaf clusters.
+      patch(mat, mat.userData.canopy ? { ...p, shadowLevel: p.shadowLevel * 1.2, floor: 0.34 } : p);
       // a drawn surface has no glossy roll-off
       mat.roughness = 1;
       mat.metalness = 0;
@@ -102,6 +113,12 @@ function patch(mat, p) {
       float rim = pow(1.0 - clamp(dot(geometryNormal, geometryViewDir), 0.0, 1.0), ${p.rimPower.toFixed(2)});
       reflectedLight.directDiffuse += ${c(p.rimColor)} * (rim * ${p.rim.toFixed(3)} * (0.25 + 0.75 * k)) * diffuseColor.rgb;
 
+      // Translucency floor. Leaves are thin and let light through, so a leaf
+      // surface with the sun behind it glows instead of going black — which is
+      // what the inner wall of a pierced crown is doing. Without this the holes
+      // in the canopy read as black specks and undo the openwork.
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * ${p.floor.toFixed(3)};
+
       // flat tones read washed out next to a photographic gradient
       vec3 tot = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
       float grey = dot(tot, vec3(0.2126, 0.7152, 0.0722));
@@ -123,7 +140,7 @@ function patch(mat, p) {
   // Without folding the previous key in, every material that shared a program
   // before (all the wind foliage) would collapse onto one cached program again.
   mat.customProgramCacheKey = function () {
-    return `toon2-${p.edge}-${p.rim}-${prevKey ? prevKey.call(this) : mat.type}`;
+    return `toon2-${p.edge}-${p.rim}-${p.floor}-${p.shadowLevel}-${prevKey ? prevKey.call(this) : mat.type}`;
   };
   mat.needsUpdate = true;
 }

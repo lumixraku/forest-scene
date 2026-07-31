@@ -35,16 +35,16 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 //   spruce     — darkest, tallest cones filling the background slopes
 // Everything is InstancedMesh — 2-4 draw calls per species.
 export function createTrees(scene) {
-  const pagodaBark = makeBarkTexture({ base: '#8a8172', crack: 'rgba(34,30,24,1)', ridge: 'rgba(202,194,176,1)', knots: false });
+  const pagodaBark = makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false });
   // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
   // it is nearly always on the shadow side of the terminator; at the old values
   // (#4f4338 / #453a32) every trunk in the frame collapsed into a black
   // silhouette and the forest read as bars rather than as wood.
-  const pineBark = makeBarkTexture({ base: '#77604c', crack: 'rgba(40,32,24,1)', ridge: 'rgba(158,136,110,1)' });
-  const highBark = makeBarkTexture({ base: '#7d6550', crack: 'rgba(44,32,22,1)', ridge: 'rgba(174,142,106,1)', knots: false });
-  const spruceBark = makeBarkTexture({ base: '#6b5647', crack: 'rgba(32,24,18,1)', ridge: 'rgba(142,120,96,1)' });
+  const pineBark = makeBarkTexture({ base: '#9c7f65', crack: 'rgba(56,44,32,1)', ridge: 'rgba(186,164,134,1)' });
+  const highBark = makeBarkTexture({ base: '#a3856a', crack: 'rgba(58,44,30,1)', ridge: 'rgba(198,168,130,1)', knots: false });
+  const spruceBark = makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' });
   // ginkgo bark: grey-brown furrowed wood
-  const ginkgoBark = makeBarkTexture({ base: '#8d7659', crack: 'rgba(42,32,22,1)', ridge: 'rgba(186,164,132,1)', knots: false });
+  const ginkgoBark = makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false });
 
   // One canopy texture per palette, shared by every tree of that species.
   // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
@@ -54,12 +54,18 @@ export function createTrees(scene) {
   // blue-green crown just goes black on the shadow side, and the frame fills with
   // dark holes; these sit high enough in value that the sky fill can still lift
   // the shadow face into a readable colour.
+  // Every palette lifted well up in value and its internal contrast narrowed.
+  // The old triples spanned roughly 30%-60% lightness, so even the lit face of a
+  // crown averaged to a dark green, and three species stacked behind each other
+  // became one dark mass. In the reference the crowns are BRIGHT and their
+  // internal range is narrow — the volume comes from the lighting split between
+  // one crown's lit and shadow faces, not from dark leaves inside the texture.
   const PIERCE = { pierce: true };
-  const pineTex = makeCanopyTexture(['#3d5a2a', '#587a38', '#7d9f4a'], PIERCE);
-  const highTex = makeCanopyTexture(['#44652c', '#628539', '#8aac52'], PIERCE);
-  const darkTex = makeCanopyTexture(['#33502c', '#4b6b35', '#6b8c45'], PIERCE);
-  const ginkgoTex = makeCanopyTexture(['#a87c18', '#d9a92c', '#f4d558'], PIERCE);
-  const pagodaTex = makeCanopyTexture(['#456a28', '#638c38', '#8bb14c'], PIERCE);
+  const pineTex = makeCanopyTexture(['#6f9243', '#84a850', '#9cc061'], PIERCE);
+  const highTex = makeCanopyTexture(['#79994a', '#8fb057', '#a7c76a'], PIERCE);
+  const darkTex = makeCanopyTexture(['#5f8442', '#75994e', '#8db35f'], PIERCE);
+  const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
+  const pagodaTex = makeCanopyTexture(['#74994a', '#8bb057', '#a3c869'], PIERCE);
 
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
@@ -72,9 +78,11 @@ export function createTrees(scene) {
     crownBase: 3.4, crownTop: 12.4, radius: 3.4,
     profile: 'umbrella',
     // These tints MULTIPLY the canopy texture, so a low `light` cancels out the
-    // lighter palettes above. Raised across every species, and the hues pulled
-    // toward yellow-green — under a gold sun a blue-green crown reads as cold.
-    hue: 0.22, light: 0.62,
+    // lighter palettes above — that is exactly what was happening: bright leaves
+    // authored in the texture, then multiplied back down to dark here. `light`
+    // now sits near 1 and the saturation range is narrow, so the tint separates
+    // one tree from its neighbour without dimming any of them.
+    hue: 0.22, sat: 0.22, light: 0.9,
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
@@ -83,7 +91,7 @@ export function createTrees(scene) {
   addCanopy(scene, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
     profile: 'cone',
-    hue: 0.26, light: 0.58,
+    hue: 0.25, sat: 0.24, light: 0.88,
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
@@ -93,7 +101,7 @@ export function createTrees(scene) {
   addCanopy(scene, highPines, highTex, {
     crownBase: 5.6, crownTop: 15.8, radius: 2.9,
     profile: 'dome',
-    hue: 0.24, light: 0.6,
+    hue: 0.23, sat: 0.22, light: 0.92,
   });
 
   // ---- ginkgo — pale bent trunks near the banks, golden domes ----
@@ -109,7 +117,10 @@ export function createTrees(scene) {
   addCanopy(scene, ginkgos, ginkgoTex, {
     crownBase: 2.6, crownTop: 9.6, radius: 2.7,
     profile: 'dome',
-    hue: 0.12, light: 0.66,
+    // Held below the greens. Gold at the same brightness as the canopy around it
+    // stops being an accent — 38 ginkgos lit to 0.94 read as half the forest
+    // being autumn, which is not what the banks are for.
+    hue: 0.13, sat: 0.26, light: 0.82,
   });
 
   // ---- spruce — darkest, tallest cones on the background slopes ----
@@ -118,7 +129,10 @@ export function createTrees(scene) {
   addCanopy(scene, spruces, darkTex, {
     crownBase: 1.8, crownTop: 18.4, radius: 2.8,
     profile: 'cone',
-    hue: 0.28, light: 0.54,
+    // The background species, so it stays the coolest and slightly the deepest of
+    // the five — but only slightly. This is the one that used to turn the far
+    // slopes into a black wall.
+    hue: 0.28, sat: 0.24, light: 0.84,
   });
 }
 
@@ -322,6 +336,9 @@ function addCanopy(scene, trees, tex, p) {
   });
   applyCanopyWind(mat, { strength: 0.13, freq: 1.1 });
   keepAuthoredNormals(mat);
+  // toonify() gives leaf surfaces a translucency floor so the crown's unlit
+  // inner wall glows rather than going black; nothing else in the scene wants it.
+  mat.userData.canopy = true;
   // Shadows must respect the holes too, or an openwork crown casts a solid
   // ellipse on the ground and gives the whole trick away.
   const depthMat = new THREE.MeshDepthMaterial({
@@ -346,10 +363,14 @@ function addCanopy(scene, trees, tex, p) {
     bucket.mats.push(dummy.matrix.clone());
     // one tint per tree — a crown has to read as a single object, so the colour
     // variation lives between trees, never within one crown
+    // Tint spread stays small in every channel. This multiplies the texture, so
+    // the only job here is telling one crown from the next — a wide lightness
+    // range means some crowns come out visibly dark, which is what broke up the
+    // canopy into a patchwork before.
     col.setHSL(
       p.hue + (Math.random() - 0.5) * 0.03,
-      0.3 + Math.random() * 0.14,
-      p.light + Math.random() * 0.09
+      (p.sat ?? 0.24) + (Math.random() - 0.5) * 0.08,
+      p.light + (Math.random() - 0.5) * 0.07
     );
     bucket.cols.push(col.clone());
   });
