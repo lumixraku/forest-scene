@@ -179,16 +179,23 @@ function drawLeaf(ctx, x, y, ang, len, colors, widthK = 0.42) {
   ctx.quadraticCurveTo(mx + dy * w, my - dx * w, x, y);
   ctx.closePath();
   ctx.fill();
-  if (len > 14) {
-    ctx.strokeStyle = 'rgba(26,38,20,0.45)';
+  // Midrib. Only on the big leaves, and faint: the canopy leaves are all >14px
+  // now, so at the old 0.45 alpha every single one got a dark stripe down it and
+  // the summed effect was a crown a full stop darker than its own palette.
+  if (len > 16) {
+    ctx.strokeStyle = 'rgba(40,54,30,0.2)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(tx, ty);
     ctx.stroke();
   }
-  if (Math.random() < 0.2) {
-    ctx.strokeStyle = 'rgba(214,232,150,0.5)';
+  // Edge highlight. Rarer and much softer than it was: at 1-in-5 leaves and 0.5
+  // alpha these pale strokes read as white specks scattered over the crowns
+  // rather than as sheen, and specks are what the whole solid-crown effort was
+  // meant to remove.
+  if (Math.random() < 0.08) {
+    ctx.strokeStyle = 'rgba(214,232,150,0.22)';
     ctx.lineWidth = 1.1;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -400,6 +407,87 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
   }
   shadeTopDown(ctx, S, S, 0.15, 0.4);
   return toTexture(c);
+}
+
+// Fully opaque leaf surface for the solid crown shells. No alpha: the crown's
+// silhouette is its geometry, so this only has to supply leaf GRAIN.
+//
+// It is deliberately almost flat. The first version baked big soft light/dark
+// lobes in here to give the crown volume, and at crown scale those lobes read as
+// camouflage blotches — a stretched military pattern wrapped around a cone. In
+// the Genshin model the texture stays nearly a single tone and ALL the volume
+// comes from the cel shader's terminator (see toon.js): warm lit plateau, cool
+// sky-lit shadow, hard edge between. So the marks here are small, low-contrast,
+// and dense enough to vanish into an even tone from more than a few metres.
+//
+// Seamless in u (the lathe wraps u around the axis) by stamping every mark at x±S.
+//
+// `pierce` turns the sheet into openwork: the leaves are drawn on a TRANSPARENT
+// ground instead of a filled one, so the gaps between leaf clumps become real
+// holes and the sky reads through the crown. The holes are deliberately
+// clump-scale, not per-leaf — pinprick alpha at crown distance is just aliasing
+// noise, whereas gaps the size of a leaf cluster give the mass its depth. The
+// caller must pair this with alphaTest + DoubleSide, or the shell's far wall
+// disappears and the crown reads as a hollow husk.
+export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false } = {}) {
+  // 1024, not 512. This sheet wraps ONCE around a crown, and a big crown is ~44m
+  // in circumference, so at 512 one texel is ~9cm and an 18-texel leaf becomes a
+  // 1.6m petal — which is why the leaves read as cabbage no matter how the stroke
+  // lengths were tuned. Doubling the sheet halves every world-space feature at
+  // once, leaves and holes together, so the two scales below stay in proportion.
+  const S = 1024;
+  const c = canvas(S, S);
+  const ctx = c.getContext('2d');
+
+  const wrap = (fn) => { for (const dx of [-S, 0, S]) { ctx.save(); ctx.translate(dx, 0); fn(); ctx.restore(); } };
+
+  if (!pierce) {
+    ctx.fillStyle = colors[1];
+    ctx.fillRect(0, 0, S, S);
+    // Leaf grain: small strokes in the three tones, no large-scale structure at
+    // all. Low alpha keeps any single stroke from becoming a visible speck.
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < 4200; i++) {
+      wrap(() => drawLeaf(ctx, Math.random() * S, Math.random() * S,
+        Math.random() * Math.PI * 2, 5 + Math.random() * 8, colors, 0.55));
+    }
+    ctx.globalAlpha = 1;
+  } else {
+    // Rosettes of leaves around scattered centres. Coverage is the whole game:
+    // too dense and the holes close up into the solid sheet again, too sparse and
+    // the crown turns to lace and stops reading as a mass.
+    //
+    // Two scales, set independently. The CLUSTER radius sets how big the holes
+    // are; the LEAF length sets how coarse the grain inside a cluster is. Both
+    // are in texels, and the sheet wraps ONCE around the crown, so `S` converts
+    // them to metres (see the note on S above): leaves ~40-60cm.
+    //
+    // Coverage has to stay high enough that the clusters overlap into a mostly
+    // solid sheet and only occasionally leave a gap. The alpha cut applies at the
+    // silhouette too, so sparse clusters tear the shell's own outline into ripped
+    // tissue paper — which is the original "too messy" complaint coming back at a
+    // smaller scale. The silhouette belongs to the geometry; alpha's job here is
+    // a few sky gaps INSIDE an intact mass, so err on the dense side.
+    const CLUMPS = 520;
+    for (let i = 0; i < CLUMPS; i++) {
+      const cx = Math.random() * S;
+      const cy = Math.random() * S;
+      const cr = 26 + Math.random() * 22;
+      const leaves = 30 + ((Math.random() * 20) | 0);
+      wrap(() => {
+        for (let k = 0; k < leaves; k++) {
+          const a = Math.random() * Math.PI * 2;
+          const r = Math.sqrt(Math.random()) * cr;
+          drawLeaf(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r,
+            a + (Math.random() - 0.5) * 1.4, 13 + Math.random() * 9, colors, 0.62);
+        }
+      });
+    }
+  }
+
+  const tex = toTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; // u is seamless; v is clamped
+  return tex;
 }
 
 // One whole spruce branch drawn side-on: a bezier stem with alternating side
