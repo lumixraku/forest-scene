@@ -204,6 +204,50 @@ function drawLeaf(ctx, x, y, ang, len, colors, widthK = 0.42) {
   }
 }
 
+// A palmate maple leaf: five lobes fanned off a short stalk, the middle one
+// longest. Each lobe is drawn as its own out-and-back curve pair inside a
+// single path, so the notches between them cut all the way to the leaf base —
+// at canopy distance those notches are the entire difference between "maple"
+// and "another oval leaf".
+function drawMapleLeaf(ctx, x, y, ang, len, colors) {
+  const r = Math.random();
+  ctx.fillStyle = r < 0.34 ? colors[0] : r < 0.72 ? colors[1] : colors[2];
+  const dx = Math.cos(ang), dy = Math.sin(ang);
+  // the blade starts a third of the way out; the gap is the stalk
+  const bx = x + dx * len * 0.32, by = y + dy * len * 0.32;
+  const blade = len * 0.68;
+  const LOBES = 5, SPREAD = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < LOBES; i++) {
+    const f = (i / (LOBES - 1)) * 2 - 1; // -1..1 across the fan
+    const a = ang + f * SPREAD;
+    const L = blade * (1 - Math.abs(f) * 0.36);
+    const w = L * 0.32;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const mx = bx + ca * L * 0.55, my = by + sa * L * 0.55;
+    ctx.moveTo(bx, by);
+    ctx.quadraticCurveTo(mx - sa * w, my + ca * w, bx + ca * L, by + sa * L);
+    ctx.quadraticCurveTo(mx + sa * w, my - ca * w, bx, by);
+  }
+  ctx.fill();
+  // stalk — a maple leaf hangs off a long petiole, and the stalks reading
+  // between the blades are most of what makes a crown look deciduous
+  ctx.strokeStyle = 'rgba(96,68,40,0.3)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+  if (Math.random() < 0.1) {
+    ctx.strokeStyle = 'rgba(255,244,214,0.24)';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + dx * blade, by + dy * blade);
+    ctx.stroke();
+  }
+}
+
 // Sun/shade grade baked into a foliage card: warm light from above, cool
 // depth below. Applied source-atop so the alpha silhouette is untouched.
 function shadeTopDown(ctx, W, H, topA = 0.2, botA = 0.42) {
@@ -429,7 +473,12 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
 // noise, whereas gaps the size of a leaf cluster give the mass its depth. The
 // caller must pair this with alphaTest + DoubleSide, or the shell's far wall
 // disappears and the crown reads as a hollow husk.
-export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false } = {}) {
+//
+// `leaf: 'maple'` swaps the pointed oval for a five-lobed palmate blade and
+// loosens the clusters, because a maple crown's silhouette is built from
+// separated hanging leaves rather than from dense rosettes.
+export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false, leaf = 'oval' } = {}) {
+  const maple = leaf === 'maple';
   // 1024, not 512. This sheet wraps ONCE around a crown, and a big crown is ~44m
   // in circumference, so at 512 one texel is ~9cm and an 18-texel leaf becomes a
   // 1.6m petal — which is why the leaves read as cabbage no matter how the stroke
@@ -468,18 +517,33 @@ export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { 
     // tissue paper — which is the original "too messy" complaint coming back at a
     // smaller scale. The silhouette belongs to the geometry; alpha's job here is
     // a few sky gaps INSIDE an intact mass, so err on the dense side.
-    const CLUMPS = 520;
+    // A palmate leaf covers far more ground per stroke than an oval of the same
+    // length — five lobes fanned over 2.4 radians — so a maple sheet needs fewer
+    // leaves per cluster to reach the same coverage. Left at the oval count it
+    // closed up into a solid sheet and lost the openwork entirely.
+    const CLUMPS = maple ? 480 : 520;
     for (let i = 0; i < CLUMPS; i++) {
       const cx = Math.random() * S;
       const cy = Math.random() * S;
-      const cr = 26 + Math.random() * 22;
-      const leaves = 30 + ((Math.random() * 20) | 0);
+      const cr = (maple ? 28 : 26) + Math.random() * 22;
+      // A palmate blade is mostly notch — five thin lobes with sky between them —
+      // so it covers far less of its own footprint than an oval of the same
+      // length. Dropped to the oval's leaf count on that reasoning, the maple
+      // sheet came out visibly holey: not openwork but speckle, background
+      // showing through the crown as flecks. Coverage has to be made up in leaf
+      // COUNT rather than leaf size, since bigger palmate leaves just read as
+      // cabbage at crown distance.
+      const leaves = (maple ? 24 : 30) + ((Math.random() * (maple ? 12 : 20)) | 0);
       wrap(() => {
         for (let k = 0; k < leaves; k++) {
           const a = Math.random() * Math.PI * 2;
           const r = Math.sqrt(Math.random()) * cr;
-          drawLeaf(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r,
-            a + (Math.random() - 0.5) * 1.4, 13 + Math.random() * 9, colors, 0.62);
+          const lx = cx + Math.cos(a) * r, ly = cy + Math.sin(a) * r;
+          if (maple) {
+            drawMapleLeaf(ctx, lx, ly, a + (Math.random() - 0.5) * 1.4, 20 + Math.random() * 10, colors);
+          } else {
+            drawLeaf(ctx, lx, ly, a + (Math.random() - 0.5) * 1.4, 13 + Math.random() * 9, colors, 0.62);
+          }
         }
       });
     }

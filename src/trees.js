@@ -26,13 +26,23 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 //     blobs always overlap and the mass never opens up into separate balls
 //
 // Trunks are unchanged: thick noise-displaced cylinders with a root flare.
-// Five species:
+//
+// Nine species. Five greens carry the forest; four warm ones are ACCENTS, and
+// the ratio is the point — the warm trees only read as autumn colour while most
+// of the frame is still green. Left unchecked (one more species each time a new
+// hue looked nice) the canopy turns into a paint chart where nothing is an
+// accent because everything is, so the green counts were trimmed as the warm
+// ones came in rather than stacking on top of them.
 //   pagoda     — 小叶榄仁, the signature valley tree: pale straight trunk,
 //                broad flat umbrella crown
 //   pine       — mid-ground conifer, full cone from near the ground
 //   high pine  — bare lower trunk with dead sticks, rounded crown held high
-//   ginkgo     — pale bent trunks by the banks, golden domes
 //   spruce     — darkest, tallest cones filling the background slopes
+//   ginkgo     — pale bent trunks by the banks, golden domes
+//   red maple  — crimson palmate crowns, the strongest accent, kept few
+//   amber maple— orange, the step that ties the reds to the golds
+//   poplar     — narrow lemon-yellow flames, the warm group's vertical
+//   gold pagoda— the flat LAYERED 小叶榄仁 spreader, turned gold
 // Everything is InstancedMesh — 2-4 draw calls per species.
 export function createTrees(scene) {
   const pagodaBark = makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false });
@@ -45,6 +55,11 @@ export function createTrees(scene) {
   const spruceBark = makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' });
   // ginkgo bark: grey-brown furrowed wood
   const ginkgoBark = makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false });
+  // maple bark: warm red-brown, so the trunk belongs to the crown above it
+  const mapleBark = makeBarkTexture({ base: '#9d7a63', crack: 'rgba(58,38,28,1)', ridge: 'rgba(198,172,146,1)' });
+  // poplar bark: pale grey-green, nearly birch — the light column under a
+  // lemon-yellow crown is half of why a poplar reads as a poplar
+  const poplarBark = makeBarkTexture({ base: '#b8b39c', crack: 'rgba(62,58,44,1)', ridge: 'rgba(226,222,206,1)', knots: false });
 
   // One canopy texture per palette, shared by every tree of that species.
   // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
@@ -71,9 +86,24 @@ export function createTrees(scene) {
   const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
   const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
 
+  // Autumn palettes. Same construction rule as the greens above — high value,
+  // narrow internal range — because it is the lighting split that gives a crown
+  // its volume, not dark leaves painted into the sheet. Warm hues make that rule
+  // stricter, not looser: a dark red leaf goes to brown mud far faster than a
+  // dark green one goes to dark green, so the darkest tone in each triple here
+  // is barely a step below the lightest.
+  //
+  // The maples get the palmate leaf; the golds keep the oval, since ginkgo and
+  // 小叶榄仁 both have small rounded leaves and would look wrong with lobes.
+  const MAPLE = { pierce: true, leaf: 'maple' };
+  const redTex = makeCanopyTexture(['#b8352c', '#d2503a', '#e8724e'], MAPLE);
+  const amberTex = makeCanopyTexture(['#c4601f', '#dd7c2a', '#f09c46'], MAPLE);
+  const yellowTex = makeCanopyTexture(['#cfa628', '#e6c33f', '#f7dc68'], PIERCE);
+  const goldTex = makeCanopyTexture(['#c99422', '#e0b038', '#f3cd5e'], PIERCE);
+
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
-    count: 70, minD: 10, maxD: 100, sRange: [0.9, 1.4],
+    count: 58, minD: 10, maxD: 100, sRange: [0.9, 1.4],
     // hand-placed trees framing the opening camera view from both banks
     fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
   });
@@ -90,7 +120,7 @@ export function createTrees(scene) {
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
-  const pines = placeSpecies({ count: 90, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
+  const pines = placeSpecies({ count: 76, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
   addTrunks(scene, pines, makeTrunkGeo({ topR: 0.11, botR: 0.4, h: 12, flare: 3.2 }), pineBark);
   addCanopy(scene, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
@@ -99,7 +129,7 @@ export function createTrees(scene) {
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
-  const highPines = placeSpecies({ count: 45, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
+  const highPines = placeSpecies({ count: 38, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
   addTrunks(scene, highPines, makeTrunkGeo({ topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 }), highBark);
   addDeadSticks(scene, highPines, highBark);
   addCanopy(scene, highPines, highTex, {
@@ -114,7 +144,9 @@ export function createTrees(scene) {
   // A solid dome fills all of it, and at the old scale these became 13m golden
   // balloons that swallowed the foreground.
   const ginkgos = placeSpecies({
-    count: 38, minD: 12, maxD: 45, sRange: [0.85, 1.25],
+    // trimmed from 38: the ginkgos are no longer the only gold in the valley, so
+    // at the old count the warm side of the palette was overweight overall
+    count: 26, minD: 12, maxD: 45, sRange: [0.85, 1.25],
     fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
   });
   addTrunks(scene, ginkgos, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 }), ginkgoBark);
@@ -125,6 +157,83 @@ export function createTrees(scene) {
     // stops being an accent — 38 ginkgos lit to 0.94 read as half the forest
     // being autumn, which is not what the banks are for.
     hue: 0.13, sat: 0.26, light: 0.82,
+  });
+
+  // ---- red maple — the strongest accent in the valley ----
+  // Kept few and kept near the water, for the same reason the ginkgos are: a
+  // saturated crimson crown pulls the eye harder than anything else in the
+  // frame, so scattering forty of them across the slopes would read as autumn
+  // everywhere and flatten the accent back into wallpaper. Six or eight in the
+  // mid-ground is the whole effect.
+  // The distance band matters as much as the count. Every warm species first went
+  // into a near-water band like the ginkgos, and the result was an opening view
+  // where the entire foreground was autumn and the greens were pushed to the far
+  // slopes — the accent had become the subject. Held off the water instead, so
+  // the near ground stays green and the colour reads as something further up the
+  // valley. One hand-placed tree stays in the framing set, at the edge of view.
+  const maples = placeSpecies({
+    count: 24, minD: 30, maxD: 96, sRange: [0.85, 1.3],
+    fixed: [{ x: -34, z: -30, s: 1.2 }],
+  });
+  addTrunks(scene, maples, makeTrunkGeo({ topR: 0.13, botR: 0.42, h: 9.4, flare: 3.0, bend: 0.3 }), mapleBark);
+  addCanopy(scene, maples, redTex, {
+    crownBase: 2.8, crownTop: 10.8, radius: 3.0,
+    profile: 'dome',
+    // Red is the one hue where the tint has to stay near 1.0 in lightness. The
+    // texture is already at full chroma, and multiplying a saturated red by a
+    // dark tint gives maroon, not autumn — the crown goes to dried blood and
+    // stops reading as foliage at all.
+    hue: 0.015, sat: 0.30, light: 0.94,
+  });
+
+  // ---- amber maple — the orange step between the reds and the golds ----
+  // Without this the warm trees are two disconnected spots on the colour wheel,
+  // crimson and lemon, and each reads as a sticker. The orange gives the eye a
+  // path between them, which is what makes the group read as one autumn rather
+  // than as three tinted trees.
+  const ambers = placeSpecies({
+    count: 26, minD: 34, maxD: 108, sRange: [0.85, 1.35],
+  });
+  addTrunks(scene, ambers, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.2, flare: 3.1, bend: 0.26 }), mapleBark);
+  addCanopy(scene, ambers, amberTex, {
+    crownBase: 3.0, crownTop: 11.4, radius: 2.9,
+    profile: 'dome',
+    hue: 0.07, sat: 0.28, light: 0.9,
+  });
+
+  // ---- yellow poplar — tall lemon flames on the middle slopes ----
+  // The golds so far are all round (ginkgo domes, amber balls), so a fourth warm
+  // species in that shape would just thicken the same note. A narrow vertical
+  // gives the warm group a second silhouette, and a column of pale yellow set
+  // among green cones is the cheapest vertical rhythm in the scene.
+  const poplars = placeSpecies({ count: 30, minD: 40, maxD: 124, sRange: [0.8, 1.3] });
+  addTrunks(scene, poplars, makeTrunkGeo({ topR: 0.08, botR: 0.32, h: 15.5, flare: 2.4 }), poplarBark);
+  addCanopy(scene, poplars, yellowTex, {
+    crownBase: 2.6, crownTop: 17.2, radius: 1.9,
+    profile: 'spire',
+    hue: 0.145, sat: 0.26, light: 0.88,
+  });
+
+  // ---- golden pagoda — the flat layered spreader, in autumn colour ----
+  // Same 小叶榄仁 build as the green pagodas above but on the `tiers` profile and
+  // turned gold: the tree whose whole character is horizontal, so it is the one
+  // that most rewards being pulled out of the green. Set wider and flatter than
+  // its green cousins (bigger radius, shorter crown) because that ratio IS the
+  // species — a tall 小叶榄仁 is just a dome.
+  // This one keeps a near-water placement, unlike the other three: the layered
+  // 小叶榄仁 silhouette is the whole reason the species exists, and it only reads
+  // at close range — at 80m the tiers merge into one flat plate and it becomes an
+  // ordinary umbrella. So a handful stay in the foreground where the layering
+  // shows, and the count is low to compensate for sitting where it is.
+  const goldPagodas = placeSpecies({
+    count: 16, minD: 14, maxD: 74, sRange: [0.9, 1.35],
+    fixed: [{ x: -35, z: -19, s: 1.25 }],
+  });
+  addTrunks(scene, goldPagodas, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.6, flare: 3.4 }), pagodaBark);
+  addCanopy(scene, goldPagodas, goldTex, {
+    crownBase: 3.6, crownTop: 10.4, radius: 4.1,
+    profile: 'tiers',
+    hue: 0.115, sat: 0.3, light: 0.86,
   });
 
   // ---- spruce — darkest, tallest cones on the background slopes ----
@@ -280,6 +389,28 @@ const CROWN_PROFILES = {
   dome: (t) => Math.pow(Math.sin(Math.PI * Math.pow(t, 0.82)), 0.8),
   // pagoda: a wide flat plate that reaches full width low and holds it
   umbrella: (t) => Math.pow(Math.sin(Math.PI * Math.pow(t, 0.55)), 0.55),
+  // The other half of the 小叶榄仁 silhouette: not one plate but a stack of
+  // them. `umbrella` gives a smooth flat mass, which reads as a parasol; the
+  // real tree is layered, with sky visible between the tiers, and that layering
+  // is what makes it recognisable from a distance. So the same wide envelope is
+  // modulated by a slow radial wave — each period pinches the lathe in, and the
+  // waist between two bulges reads as the gap between two branch tiers. The
+  // envelope still hits 0 at both ends, so the shell stays closed.
+  // The wave frequency is the whole tuning problem. At 3.4 periods it produced a
+  // single waist at half height — two stacked discs, an hourglass rather than a
+  // layered tree. Seven periods gives three waists at roughly even spacing, so
+  // the crown reads as four tiers. The amplitude has to come DOWN as the
+  // frequency goes up: a deep pinch at this spacing severs the mass into
+  // separate plates and the silhouette stops being one closed crown.
+  tiers: (t) => {
+    const env = Math.pow(Math.sin(Math.PI * Math.pow(t, 0.44)), 0.42);
+    return env * (0.86 + 0.14 * Math.sin(Math.PI * (t * 7 - 0.15)));
+  },
+  // Fastigiate broadleaf — a tall narrow flame, poplar-like. Reaching full
+  // width low down and holding it almost to the tip is what separates this from
+  // `cone`; a conifer tapers the whole way, a poplar is a column with a round
+  // shoulder. Scaled tall and thin by the caller.
+  spire: (t) => Math.pow(Math.sin(Math.PI * Math.pow(t, 0.72)), 0.28),
 };
 
 // One closed crown shell, as a lathe of the species' profile curve.
@@ -295,7 +426,13 @@ const CROWN_PROFILES = {
 // seamless-in-u canopy texture wants.
 function makeCrownGeo(profileName) {
   const profile = CROWN_PROFILES[profileName];
-  const STEPS = 17, SEGS = 22;
+  // 17 steps is plenty for the smooth profiles, but `tiers` carries a 7-period
+  // wave — 3.5 cycles over the height — and sampling that at 17 points lands
+  // barely 4 vertices per cycle, so the waists fall between samples and the
+  // layering aliases into an irregular wobble instead of reading as tiers. The
+  // extra rings only exist on the one profile that needs them.
+  const STEPS = profileName === 'tiers' ? 40 : 17;
+  const SEGS = 22;
   const pts = [];
   for (let i = 0; i <= STEPS; i++) {
     const t = i / STEPS;
