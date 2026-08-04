@@ -3,8 +3,9 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyCanopyWind, keepAuthoredNormals } from './wind.js';
 import { bucketFor, addChunkedInstances } from './chunks.js';
 import { terrainHeight } from './terrain.js';
-import { streamAt, levelAt, streamCurve, inWater } from './streamPath.js';
+import { streamAt, levelAt, streamCurve, inWater, midT } from './streamPath.js';
 import { makeCanopyTexture, makeBarkTexture } from './textures.js';
+import { CHUNK, chunkCentre } from './grid.js';
 
 // Storybook forest: every crown is a SOLID MASS, not a cloud of leaf cards.
 //
@@ -44,71 +45,73 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 //   poplar     — narrow lemon-yellow flames, the warm group's vertical
 //   gold pagoda— the flat LAYERED 小叶榄仁 spreader, turned gold
 // Everything is InstancedMesh — 2-4 draw calls per species.
-export function createTrees(scene) {
-  const pagodaBark = makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false });
-  // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
-  // it is nearly always on the shadow side of the terminator; at the old values
-  // (#4f4338 / #453a32) every trunk in the frame collapsed into a black
-  // silhouette and the forest read as bars rather than as wood.
-  const pineBark = makeBarkTexture({ base: '#9c7f65', crack: 'rgba(56,44,32,1)', ridge: 'rgba(186,164,134,1)' });
-  const highBark = makeBarkTexture({ base: '#a3856a', crack: 'rgba(58,44,30,1)', ridge: 'rgba(198,168,130,1)', knots: false });
-  const spruceBark = makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' });
-  // ginkgo bark: grey-brown furrowed wood
-  const ginkgoBark = makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false });
-  // maple bark: warm red-brown, so the trunk belongs to the crown above it
-  const mapleBark = makeBarkTexture({ base: '#9d7a63', crack: 'rgba(58,38,28,1)', ridge: 'rgba(198,172,146,1)' });
-  // poplar bark: pale grey-green, nearly birch — the light column under a
-  // lemon-yellow crown is half of why a poplar reads as a poplar
-  const poplarBark = makeBarkTexture({ base: '#b8b39c', crack: 'rgba(62,58,44,1)', ridge: 'rgba(226,222,206,1)', knots: false });
-
-  // One canopy texture per palette, shared by every tree of that species.
-  // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
-  // leaf clumps are real holes and the sky reads through the canopy. See
-  // makeCanopyTexture — the shell geometry still owns the silhouette.
-  // Lighter and warmer than the old noon greens. Under a low gold sun a deep
-  // blue-green crown just goes black on the shadow side, and the frame fills with
-  // dark holes; these sit high enough in value that the sky fill can still lift
-  // the shadow face into a readable colour.
-  // Every palette lifted well up in value and its internal contrast narrowed.
-  // The old triples spanned roughly 30%-60% lightness, so even the lit face of a
-  // crown averaged to a dark green, and three species stacked behind each other
-  // became one dark mass. In the reference the crowns are BRIGHT and their
-  // internal range is narrow — the volume comes from the lighting split between
-  // one crown's lit and shadow faces, not from dark leaves inside the texture.
+// Every bark and canopy sheet is drawn once and shared by all chunks. These are
+// 1024x1024 canvases with tens of thousands of brush strokes each — thirteen of
+// them is the single most expensive thing in the build, and redrawing the set per
+// chunk would multiply it by nine for pixel-identical results.
+let sharedTex = null;
+function textures() {
+  if (sharedTex) return sharedTex;
   const PIERCE = { pierce: true };
-  // Hues pulled back toward true green. The previous set sat around 80-90 degrees
-  // — yellow-green — which under a warm sun left the whole canopy the same family
-  // as the gold ginkgos, so nothing in the frame read as green and the golds
-  // stopped being accents. These sit nearer 100 degrees and keep the value lift.
-  const pineTex = makeCanopyTexture(['#5c8f45', '#6ea451', '#86bc63'], PIERCE);
-  const highTex = makeCanopyTexture(['#67974a', '#7cad58', '#94c56b'], PIERCE);
-  const darkTex = makeCanopyTexture(['#4d8043', '#63954f', '#7bad60'], PIERCE);
-  const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
-  const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
-
-  // Autumn palettes. Same construction rule as the greens above — high value,
-  // narrow internal range — because it is the lighting split that gives a crown
-  // its volume, not dark leaves painted into the sheet. Warm hues make that rule
-  // stricter, not looser: a dark red leaf goes to brown mud far faster than a
-  // dark green one goes to dark green, so the darkest tone in each triple here
-  // is barely a step below the lightest.
-  //
-  // The maples get the palmate leaf; the golds keep the oval, since ginkgo and
-  // 小叶榄仁 both have small rounded leaves and would look wrong with lobes.
   const MAPLE = { pierce: true, leaf: 'maple' };
-  const redTex = makeCanopyTexture(['#b8352c', '#d2503a', '#e8724e'], MAPLE);
-  const amberTex = makeCanopyTexture(['#c4601f', '#dd7c2a', '#f09c46'], MAPLE);
-  const yellowTex = makeCanopyTexture(['#cfa628', '#e6c33f', '#f7dc68'], PIERCE);
-  const goldTex = makeCanopyTexture(['#c99422', '#e0b038', '#f3cd5e'], PIERCE);
+  sharedTex = {
+    pagodaBark: makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false }),
+    // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
+    // it is nearly always on the shadow side of the terminator; at the old values
+    // (#4f4338 / #453a32) every trunk in the frame collapsed into a black
+    // silhouette and the forest read as bars rather than as wood.
+    pineBark: makeBarkTexture({ base: '#9c7f65', crack: 'rgba(56,44,32,1)', ridge: 'rgba(186,164,134,1)' }),
+    highBark: makeBarkTexture({ base: '#a3856a', crack: 'rgba(58,44,30,1)', ridge: 'rgba(198,168,130,1)', knots: false }),
+    spruceBark: makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' }),
+    // ginkgo bark: grey-brown furrowed wood
+    ginkgoBark: makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false }),
+    // maple bark: warm red-brown, so the trunk belongs to the crown above it
+    mapleBark: makeBarkTexture({ base: '#9d7a63', crack: 'rgba(58,38,28,1)', ridge: 'rgba(198,172,146,1)' }),
+    // poplar bark: pale grey-green, nearly birch — the light column under a
+    // lemon-yellow crown is half of why a poplar reads as a poplar
+    poplarBark: makeBarkTexture({ base: '#b8b39c', crack: 'rgba(62,58,44,1)', ridge: 'rgba(226,222,206,1)', knots: false }),
+    // Hues pulled back toward true green. The previous set sat around 80-90
+    // degrees — yellow-green — which under a warm sun left the whole canopy the
+    // same family as the gold ginkgos, so nothing read as green and the golds
+    // stopped being accents. These sit nearer 100 degrees and keep the value lift.
+    pineTex: makeCanopyTexture(['#5c8f45', '#6ea451', '#86bc63'], PIERCE),
+    highTex: makeCanopyTexture(['#67974a', '#7cad58', '#94c56b'], PIERCE),
+    darkTex: makeCanopyTexture(['#4d8043', '#63954f', '#7bad60'], PIERCE),
+    ginkgoTex: makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE),
+    pagodaTex: makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE),
+    // Autumn palettes. Same construction rule as the greens — high value, narrow
+    // internal range — because it is the lighting split that gives a crown its
+    // volume, not dark leaves painted into the sheet. Warm hues make that rule
+    // stricter, not looser: a dark red leaf goes to brown mud far faster than a
+    // dark green one goes to dark green.
+    redTex: makeCanopyTexture(['#b8352c', '#d2503a', '#e8724e'], MAPLE),
+    amberTex: makeCanopyTexture(['#c4601f', '#dd7c2a', '#f09c46'], MAPLE),
+    yellowTex: makeCanopyTexture(['#cfa628', '#e6c33f', '#f7dc68'], PIERCE),
+    goldTex: makeCanopyTexture(['#c99422', '#e0b038', '#f3cd5e'], PIERCE),
+  };
+  return sharedTex;
+}
 
+// One chunk's forest. Everything is placed in world space within this chunk's
+// bounds, and returned as a Group the manager can add and later dispose.
+export function createTrees(scene, cx = 0, cz = 0) {
+  const T = textures();
+  const group = new THREE.Group();
+  const origin = chunkCentre(cx, cz);
+  const {
+    pagodaBark, pineBark, highBark, spruceBark, ginkgoBark, mapleBark, poplarBark,
+    pineTex, highTex, darkTex, ginkgoTex, pagodaTex,
+    redTex, amberTex, yellowTex, goldTex,
+  } = T;
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
+    origin,
     count: 58, minD: 10, maxD: 100, sRange: [0.9, 1.4],
     // hand-placed trees framing the opening camera view from both banks
     fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
   });
-  addTrunks(scene, pagodas, makeTrunkGeo({ topR: 0.13, botR: 0.4, h: 11.8, flare: 3.4 }), pagodaBark);
-  addCanopy(scene, pagodas, pagodaTex, {
+  addTrunks(group, pagodas, makeTrunkGeo({ topR: 0.13, botR: 0.4, h: 11.8, flare: 3.4 }), pagodaBark);
+  addCanopy(group, pagodas, pagodaTex, {
     crownBase: 3.4, crownTop: 12.4, radius: 3.4,
     profile: 'umbrella',
     // These tints MULTIPLY the canopy texture, so a low `light` cancels out the
@@ -120,19 +123,19 @@ export function createTrees(scene) {
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
-  const pines = placeSpecies({ count: 76, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
-  addTrunks(scene, pines, makeTrunkGeo({ topR: 0.11, botR: 0.4, h: 12, flare: 3.2 }), pineBark);
-  addCanopy(scene, pines, pineTex, {
+  const pines = placeSpecies({ origin, count: 76, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
+  addTrunks(group, pines, makeTrunkGeo({ topR: 0.11, botR: 0.4, h: 12, flare: 3.2 }), pineBark);
+  addCanopy(group, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
     profile: 'cone',
     hue: 0.29, sat: 0.24, light: 0.88,
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
-  const highPines = placeSpecies({ count: 38, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
-  addTrunks(scene, highPines, makeTrunkGeo({ topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 }), highBark);
-  addDeadSticks(scene, highPines, highBark);
-  addCanopy(scene, highPines, highTex, {
+  const highPines = placeSpecies({ origin, count: 38, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
+  addTrunks(group, highPines, makeTrunkGeo({ topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 }), highBark);
+  addDeadSticks(group, highPines, highBark);
+  addCanopy(group, highPines, highTex, {
     crownBase: 5.6, crownTop: 15.8, radius: 2.9,
     profile: 'dome',
     hue: 0.28, sat: 0.22, light: 0.92,
@@ -144,13 +147,14 @@ export function createTrees(scene) {
   // A solid dome fills all of it, and at the old scale these became 13m golden
   // balloons that swallowed the foreground.
   const ginkgos = placeSpecies({
+    origin,
     // trimmed from 38: the ginkgos are no longer the only gold in the valley, so
     // at the old count the warm side of the palette was overweight overall
     count: 26, minD: 12, maxD: 45, sRange: [0.85, 1.25],
     fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
   });
-  addTrunks(scene, ginkgos, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 }), ginkgoBark);
-  addCanopy(scene, ginkgos, ginkgoTex, {
+  addTrunks(group, ginkgos, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 }), ginkgoBark);
+  addCanopy(group, ginkgos, ginkgoTex, {
     crownBase: 2.6, crownTop: 9.6, radius: 2.7,
     profile: 'dome',
     // Held below the greens. Gold at the same brightness as the canopy around it
@@ -172,11 +176,12 @@ export function createTrees(scene) {
   // the near ground stays green and the colour reads as something further up the
   // valley. One hand-placed tree stays in the framing set, at the edge of view.
   const maples = placeSpecies({
+    origin,
     count: 24, minD: 30, maxD: 96, sRange: [0.85, 1.3],
     fixed: [{ x: -34, z: -30, s: 1.2 }],
   });
-  addTrunks(scene, maples, makeTrunkGeo({ topR: 0.13, botR: 0.42, h: 9.4, flare: 3.0, bend: 0.3 }), mapleBark);
-  addCanopy(scene, maples, redTex, {
+  addTrunks(group, maples, makeTrunkGeo({ topR: 0.13, botR: 0.42, h: 9.4, flare: 3.0, bend: 0.3 }), mapleBark);
+  addCanopy(group, maples, redTex, {
     crownBase: 2.8, crownTop: 10.8, radius: 3.0,
     profile: 'dome',
     // Red is the one hue where the tint has to stay near 1.0 in lightness. The
@@ -192,10 +197,11 @@ export function createTrees(scene) {
   // path between them, which is what makes the group read as one autumn rather
   // than as three tinted trees.
   const ambers = placeSpecies({
+    origin,
     count: 26, minD: 34, maxD: 108, sRange: [0.85, 1.35],
   });
-  addTrunks(scene, ambers, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.2, flare: 3.1, bend: 0.26 }), mapleBark);
-  addCanopy(scene, ambers, amberTex, {
+  addTrunks(group, ambers, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.2, flare: 3.1, bend: 0.26 }), mapleBark);
+  addCanopy(group, ambers, amberTex, {
     crownBase: 3.0, crownTop: 11.4, radius: 2.9,
     profile: 'dome',
     hue: 0.07, sat: 0.28, light: 0.9,
@@ -206,9 +212,9 @@ export function createTrees(scene) {
   // species in that shape would just thicken the same note. A narrow vertical
   // gives the warm group a second silhouette, and a column of pale yellow set
   // among green cones is the cheapest vertical rhythm in the scene.
-  const poplars = placeSpecies({ count: 30, minD: 40, maxD: 124, sRange: [0.8, 1.3] });
-  addTrunks(scene, poplars, makeTrunkGeo({ topR: 0.08, botR: 0.32, h: 15.5, flare: 2.4 }), poplarBark);
-  addCanopy(scene, poplars, yellowTex, {
+  const poplars = placeSpecies({ origin, count: 30, minD: 40, maxD: 124, sRange: [0.8, 1.3] });
+  addTrunks(group, poplars, makeTrunkGeo({ topR: 0.08, botR: 0.32, h: 15.5, flare: 2.4 }), poplarBark);
+  addCanopy(group, poplars, yellowTex, {
     crownBase: 2.6, crownTop: 17.2, radius: 1.9,
     profile: 'spire',
     hue: 0.145, sat: 0.26, light: 0.88,
@@ -226,20 +232,21 @@ export function createTrees(scene) {
   // ordinary umbrella. So a handful stay in the foreground where the layering
   // shows, and the count is low to compensate for sitting where it is.
   const goldPagodas = placeSpecies({
+    origin,
     count: 16, minD: 14, maxD: 74, sRange: [0.9, 1.35],
     fixed: [{ x: -35, z: -19, s: 1.25 }],
   });
-  addTrunks(scene, goldPagodas, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.6, flare: 3.4 }), pagodaBark);
-  addCanopy(scene, goldPagodas, goldTex, {
+  addTrunks(group, goldPagodas, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.6, flare: 3.4 }), pagodaBark);
+  addCanopy(group, goldPagodas, goldTex, {
     crownBase: 3.6, crownTop: 10.4, radius: 4.1,
     profile: 'tiers',
     hue: 0.115, sat: 0.3, light: 0.86,
   });
 
   // ---- spruce — darkest, tallest cones on the background slopes ----
-  const spruces = placeSpecies({ count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
-  addTrunks(scene, spruces, makeTrunkGeo({ topR: 0.08, botR: 0.46, h: 17, flare: 2.8 }), spruceBark);
-  addCanopy(scene, spruces, darkTex, {
+  const spruces = placeSpecies({ origin, count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
+  addTrunks(group, spruces, makeTrunkGeo({ topR: 0.08, botR: 0.46, h: 17, flare: 2.8 }), spruceBark);
+  addCanopy(group, spruces, darkTex, {
     crownBase: 1.8, crownTop: 18.4, radius: 2.8,
     profile: 'cone',
     // The background species, so it stays the coolest and slightly the deepest of
@@ -247,6 +254,9 @@ export function createTrees(scene) {
     // slopes into a black wall.
     hue: 0.31, sat: 0.24, light: 0.84,
   });
+
+  scene.add(group);
+  return group;
 }
 
 // Global tree scale — trees tower over the grass and bushes; every species'
@@ -256,21 +266,25 @@ const TREE_SCALE = 2;
 // Rejection-sampled placements along the stream distance bands. The forest
 // thickens away from the water, and the opening camera position stays clear
 // so a random tree never spawns right in front of the initial view.
-function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
+function placeSpecies({ origin, count, minD, maxD, sRange, fixed = [] }) {
+  // The hand-placed framing trees belong to the middle chunk only — they were
+  // authored in world coordinates to frame the opening camera view, so repeating
+  // them in all nine chunks would clone that arrangement across the valley.
+  const isMiddle = origin.x === 0 && origin.z === 0;
   // the hand-placed framing trees get the same water test as the scattered ones:
   // their coordinates were authored against a channel a few units wide, and the
   // pools have since opened out far enough to swallow some of them
-  const trees = fixed
+  const trees = (isMiddle ? fixed : [])
     .filter((f) => !inWater(f.x, f.z, 1.2))
     .map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE }));
-  const camP = streamCurve.getPointAt(0.36);
+  const camP = streamCurve.getPointAt(midT(0.36));
   const camX = camP.x - 2, camZ = camP.z + 8;
 
   let attempts = 0;
   while (trees.length < count && attempts < count * 40) {
     attempts++;
-    const x = (Math.random() - 0.5) * 290;
-    const z = (Math.random() - 0.5) * 290;
+    const x = origin.x + (Math.random() - 0.5) * (CHUNK - 10);
+    const z = origin.z + (Math.random() - 0.5) * (CHUNK - 10);
     if ((x - camX) * (x - camX) + (z - camZ) * (z - camZ) < 15 * 15) continue;
     const { d: sd, t } = streamAt(x, z);
     if (sd < minD || sd > maxD) continue;
@@ -326,7 +340,7 @@ function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
 // it saves in geometry. computeBoundingSphere() replaces the old
 // `frustumCulled = false`: instance-aware bounds mean culling is correct, so
 // there's no reason to opt out of it.
-function addTrunks(scene, trees, geo, barkTex) {
+function addTrunks(group, trees, geo, barkTex) {
   const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95, metalness: 0 });
   const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
   mesh.castShadow = true;
@@ -341,11 +355,11 @@ function addTrunks(scene, trees, geo, barkTex) {
   });
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
-  scene.add(mesh);
+  group.add(mesh);
 }
 
 // Short dead branch stubs angling down off the bare lower trunks.
-function addDeadSticks(scene, trees, barkTex) {
+function addDeadSticks(group, trees, barkTex) {
   if (trees.length === 0) return;
   const PER = 7;
   const geo = new THREE.CylinderGeometry(0.015, 0.055, 2.4, 5, 1);
@@ -371,7 +385,7 @@ function addDeadSticks(scene, trees, barkTex) {
   }
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
-  scene.add(mesh);
+  group.add(mesh);
 }
 
 // Crown silhouette: horizontal radius (0-1) at height fraction t, measured from
@@ -461,7 +475,7 @@ function makeCrownGeo(profileName) {
 
 // A crown per tree: one instance of one closed shell. Three shape variants per
 // species, dealt out round-robin, so neighbouring trees are not clones.
-function addCanopy(scene, trees, tex, p) {
+function addCanopy(group, trees, tex, p) {
   const variants = [makeCrownGeo(p.profile), makeCrownGeo(p.profile), makeCrownGeo(p.profile)];
   // Openwork, so alphaTest + DoubleSide: without the back faces you see straight
   // through the holes to nothing and the crown reads as an empty husk; with them
@@ -526,7 +540,7 @@ function addCanopy(scene, trees, tex, p) {
   // Chunked for the same reason the branch cards were: one field-wide mesh has
   // field-wide bounds and can never be frustum culled.
   variants.forEach((geo, i) => {
-    addChunkedInstances(scene, buckets[i], geo, mat, {
+    addChunkedInstances(group, buckets[i], geo, mat, {
       castShadow: true,
       receiveShadow: true,
       depthMat,

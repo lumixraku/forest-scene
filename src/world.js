@@ -51,7 +51,8 @@ export function createWorld(scene) {
   // No fog. Depth comes from the crowns' own value range and the warm/cool light
   // split instead — haze washing out the distance is not wanted here.
 
-  scene.add(makeSkyDome());
+  const sky = makeSkyDome();
+  scene.add(sky);
 
   // Cool sky fill: the shadow side has to stay open and readable, and it has to
   // be a DIFFERENT HUE from the sun rather than a darker version of it. Backed
@@ -68,32 +69,62 @@ export function createWorld(scene) {
   // turn through a terminator instead of being uniformly capped.
   const sunPos = new THREE.Vector3(60, 92, -120);
   const sun = new THREE.DirectionalLight(PALETTE.sun, 3.2);
-  // shadow camera sits far along the sun direction so its static box can
-  // cover the whole ~300m field — soft low-res shadows everywhere, at any
-  // camera distance, rather than a crisp box that follows the camera
   sun.position.copy(sunPos).multiplyScalar(2);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
-  const s = 180;
+  // The shadow box FOLLOWS THE CAMERA now, and is sized for roughly one chunk
+  // rather than the whole field.
+  //
+  // It used to be one static box covering the entire 300-unit scene, which worked
+  // because the scene was 300 units. The field is now ~900 across; a static box
+  // that reached all of it would spread 1024x1024 texels over 900 units — about
+  // 0.9m per texel — and every crown's shadow would dissolve into a soft grey
+  // smear. Keeping the box small and moving it with the camera holds the texel
+  // density that the dappled shade under the canopy depends on.
+  const s = 190;
   sun.shadow.camera.left = -s;
   sun.shadow.camera.right = s;
   sun.shadow.camera.top = s;
   sun.shadow.camera.bottom = -s;
-  // The light now sits ~312 units out at a shallow angle, so the depth range has
-  // to be far deeper than the old 20-400: a grazing sun throws shadows the length
-  // of the field, and anything outside this slab silently stops casting.
+  // The light sits ~312 units out at a shallow angle, so the depth range has to be
+  // far deeper than the old 20-400: a grazing sun throws shadows the length of the
+  // field, and anything outside this slab silently stops casting.
   sun.shadow.camera.near = 20;
-  sun.shadow.camera.far = 640;
+  sun.shadow.camera.far = 900;
   sun.shadow.bias = -0.0006;
   sun.shadow.normalBias = 0.2;
   scene.add(sun);
   scene.add(sun.target);
 
-  return { sun, sunPos, hemi, PALETTE };
+  // Re-centre the shadow box (and the sky dome) on the camera. Snapped to a grid
+  // rather than tracking continuously: a directional shadow map that slides by
+  // fractions of a texel every frame shimmers along every shadow edge, and since
+  // the map is only re-rendered on demand, snapping also means most frames need no
+  // re-render at all.
+  const SNAP = 60;
+  let lastSnap = null;
+  function follow(camera) {
+    const gx = Math.round(camera.position.x / SNAP) * SNAP;
+    const gz = Math.round(camera.position.z / SNAP) * SNAP;
+    if (lastSnap && lastSnap.x === gx && lastSnap.z === gz) return false;
+    lastSnap = { x: gx, z: gz };
+    sun.position.set(gx + sunPos.x * 2, sunPos.y * 2, gz + sunPos.z * 2);
+    sun.target.position.set(gx, 0, gz);
+    sun.target.updateMatrixWorld();
+    sun.shadow.camera.updateProjectionMatrix();
+    return true; // caller must re-render the shadow map
+  }
+
+  return { sun, sunPos, hemi, PALETTE, follow, sky };
 }
 
 function makeSkyDome() {
-  const geo = new THREE.SphereGeometry(500, 32, 16);
+  // 500 was comfortably outside a 300-unit scene. The field is now ~900 across, so
+  // at 500 the camera can walk right through the dome wall and the sky turns inside
+  // out. It also follows the camera (see `follow`), so the horizon stays at the same
+  // apparent distance wherever the player stands — a fixed dome would let them
+  // approach its edge and watch the gradient bunch up.
+  const geo = new THREE.SphereGeometry(900, 32, 16);
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,

@@ -5,7 +5,35 @@ import * as THREE from 'three';
 // flowing toward (and past) the camera like the reference footage.
 export const STREAM_HALF_WIDTH = 7.0; // widest half-width (pools)
 
+// The brook now crosses the whole 3x3 field, entering at the far upstream corner
+// and leaving at the far downstream one. The middle nine-hundred-unit span
+// (-150..150) keeps its original control points EXACTLY, so the chunk the camera
+// opens in has the same channel, the same pools and the same framing it always
+// had; the new points only extend the curve outward past that.
+//
+// Because the curve is longer, the same `t` no longer lands in the same place: t
+// used to run 0..1 over 300 units and now runs over ~900. Everything authored
+// against t — the terrace drops, the pools, the camera's own start position —
+// is therefore expressed relative to the middle span below rather than as bare
+// numbers.
+// The extensions drift in z as well as x, so the brook enters at one corner of
+// the 3x3 and leaves at the opposite one instead of running straight down the
+// middle row. Keeping z near 0 would have left the four corner chunks and the
+// two side chunks with no water in them at all — six of nine chunks with no
+// terrain focus, since the whole valley shape is derived from distance to the
+// stream. The small irregular steps in z on top of the drift are the meander;
+// without them the extensions read as two straight canals bolted to a winding
+// middle.
 const points = [
+  [-450, 384],
+  [-410, 336],
+  [-370, 310],
+  [-330, 254],
+  [-290, 218],
+  [-250, 162],
+  [-210, 108],
+  [-190, 48],
+  // ---- the original authored span begins here ----
   [-150, 14],
   [-110, -8],
   [-70, -20],
@@ -15,38 +43,104 @@ const points = [
   [70, -26],
   [110, -10],
   [150, -20],
+  // ---- and ends here ----
+  [190, -60],
+  [210, -104],
+  [250, -150],
+  [290, -196],
+  [330, -238],
+  [370, -292],
+  [410, -330],
+  [450, -384],
 ].map(([x, z]) => new THREE.Vector3(x, 0, z));
 
 export const streamCurve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
 
-const N = 300;
+// Where the original 300-unit scene sits in the new, longer parameter range.
+//
+// This has to be measured, not counted. The obvious answer is "8 of 24
+// segments, so 8/24", and it is wrong: every `t` in this module comes from
+// getSpacedPoints / getPointAt, which are parameterised by ARC LENGTH, while
+// segment index is parameterised by control point. The diagonal extensions cover
+// more distance per segment than the winding middle does, so the old span is
+// really ~0.25 of the arc length, and 8/24 put its boundary 40 units past the
+// authored control point.
+function arcParamOf(target) {
+  const STEPS = 4000;
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i <= STEPS; i++) {
+    const u = i / STEPS;
+    const p = streamCurve.getPointAt(u);
+    const d = (p.x - target[0]) ** 2 + (p.z - target[1]) ** 2;
+    if (d < bestD) { bestD = d; best = u; }
+  }
+  return best;
+}
+export const MID_T0 = arcParamOf([-150, 14]);
+export const MID_T1 = arcParamOf([150, -20]);
+// Map a "middle-span" parameter (0..1 over the original scene) to curve t.
+export const midT = (u) => MID_T0 + (MID_T1 - MID_T0) * u;
+
+// Sample density scales with the curve: 300 samples over 300 units was one per
+// unit, and keeping that pitch over ~2700 units of arc length is what holds
+// streamAt's precision — too coarse and `raw` overshoots, which plants trees in
+// the water and tears the bank foam.
+const N = 2400;
 export const streamSamples = streamCurve.getSpacedPoints(N);
 
 // ---- terraced elevation profile ----
 // The gap between 0.32 and 0.52 is deliberate: a pool's surface has to be level,
 // so the lake needs a reach with no step in it. Every other drop is ~0.12 apart.
-export const DROPS = [
-  { t: 0.10, h: 1.6 },
-  { t: 0.22, h: 1.5 },
-  { t: 0.32, h: 1.8 },
-  { t: 0.52, h: 2.2 }, // taller step out of the lake
-  { t: 0.64, h: 1.6 },
-  { t: 0.76, h: 1.7 },
-  { t: 0.88, h: 1.6 },
+// The terrace pattern the middle span was authored with, in middle-span
+// parameter (0..1 over the original 300-unit scene).
+const MID_DROPS = [
+  { u: 0.10, h: 1.6 },
+  { u: 0.22, h: 1.5 },
+  { u: 0.32, h: 1.8 },
+  { u: 0.52, h: 2.2 }, // taller step out of the lake
+  { u: 0.64, h: 1.6 },
+  { u: 0.76, h: 1.7 },
+  { u: 0.88, h: 1.6 },
 ];
-export const DROP_LEN = 0.008; // ~2.5 world units — short, steep sills
+const SPAN = MID_T1 - MID_T0; // 1/3 — one chunk's worth of curve parameter
+
+// Repeat that pattern up and down the extended curve so the whole valley keeps
+// descending at the SAME physical cadence — a step roughly every 40 units. The
+// rep=0 copy is the original span, reproduced exactly.
+//
+// Two reps each way, not one. The middle span is ~0.25 of the arc length while
+// each extension is ~0.37, so one repetition per side covers only as far as
+// t=0.13 and t=0.88 and left the outermost stretch of the brook with no terraces
+// and no pools at all — a flat, constant-width canal running off both corners.
+// The out-of-range copies are harmless: levelAt and halfWidthAt only ever
+// evaluate t in 0..1, so a drop authored past either end simply never applies.
+const REPS = [-2, -1, 0, 1, 2];
+export const DROPS = REPS
+  .flatMap((rep) => MID_DROPS.map((d) => ({ t: midT(d.u) + rep * SPAN, h: d.h })))
+  .sort((a, b) => a.t - b.t);
+// ~2.5 world units, same as before — but t now covers 3x the arc length, so the
+// parameter width of one sill is a third of what it was.
+export const DROP_LEN = 0.008 * SPAN;
 
 const TOTAL_DROP = DROPS.reduce((a, d) => a + d.h, 0);
+// Sum of the drops BELOW the middle span. The original scene's downstream end
+// sat at -0.4, and it has to stay there or the middle chunk's water, banks and
+// terrain all shift vertically. So the datum is pushed down by however much the
+// new downstream extension descends, and the extension goes BELOW the old scene
+// rather than lifting it.
+const BELOW_MID = DROPS.filter((d) => d.t < MID_T0).reduce((a, d) => a + d.h, 0);
+const BASE = -0.4 - BELOW_MID;
 
 // smooth average grade — used for terrain far from the water so the hillsides
 // don't inherit the sharp terrace steps
 export function levelSmoothAt(t) {
-  return -0.4 + TOTAL_DROP * t;
+  return BASE + TOTAL_DROP * t;
 }
 
 // water level of the pool/chute at parameter t
 export function levelAt(t) {
-  let lvl = -0.4;
+  let lvl = BASE;
   for (const d of DROPS) {
     if (t > d.t + DROP_LEN * 0.5) {
       lvl += d.h;
@@ -85,16 +179,37 @@ export function cascadeAt(t) {
 // Each pool sits between two drops, and no pool may spill across one: the water
 // surface steps down at a drop, so a basin straddling one would be sliced into
 // two levels — which submerges the trees along the lower half of its bank.
-const POOLS = [
-  { t: 0.05, w: 4.5, s: 0.026 },
-  { t: 0.16, w: 8.0, s: 0.028 },
-  { t: 0.26, w: 3.5, s: 0.020 },
-  { t: 0.42, w: 20.0, s: 0.060 }, // the lake, inside the 0.32-0.52 flat reach
-  { t: 0.58, w: 5.5, s: 0.024 },
-  { t: 0.70, w: 12.0, s: 0.032 },
-  { t: 0.82, w: 3.5, s: 0.022 },
-  { t: 0.94, w: 7.0, s: 0.028 },
+// Again authored in middle-span parameter, then repeated. `s` is a parameter
+// width, so it scales with SPAN along with everything else — left at its old
+// value each pool would have stretched to three times its physical length and
+// the lake would have swallowed a third of the valley.
+const MID_POOLS = [
+  { u: 0.05, w: 4.5, s: 0.026 },
+  { u: 0.16, w: 8.0, s: 0.028 },
+  { u: 0.26, w: 3.5, s: 0.020 },
+  { u: 0.42, w: 20.0, s: 0.060 }, // the lake, inside the 0.32-0.52 flat reach
+  { u: 0.58, w: 5.5, s: 0.024 },
+  { u: 0.70, w: 12.0, s: 0.032 },
+  { u: 0.82, w: 3.5, s: 0.022 },
+  { u: 0.94, w: 7.0, s: 0.028 },
 ];
+// The upstream and downstream copies get their pool widths shuffled between the
+// authored values rather than repeating the lake verbatim in all three chunks —
+// one 40-unit lake per 300 units is a landmark, three identical ones in a row
+// read as a tiled texture. Widths only; the spacing pattern stays.
+const REP_W = {
+  '-2': [8.0, 4.5, 3.5, 20.0, 7.0, 12.0, 3.5, 5.5],
+  '-1': [5.5, 12.0, 3.5, 8.0, 4.5, 20.0, 3.5, 7.0],
+  '1': [7.0, 4.5, 3.5, 12.0, 5.5, 20.0, 3.5, 8.0],
+  '2': [4.5, 8.0, 3.5, 20.0, 12.0, 5.5, 3.5, 7.0],
+};
+const POOLS = REPS.flatMap((rep) =>
+  MID_POOLS.map((p, i) => ({
+    t: midT(p.u) + rep * SPAN,
+    w: rep === 0 ? p.w : REP_W[rep][i],
+    s: p.s * SPAN,
+  }))
+);
 const NECK = 1.9; // half-width of the chutes between pools
 const OPEN = 8.0; // wider than this and the water reads as open, not a chute
 
@@ -104,8 +219,11 @@ export function halfWidthAt(t) {
     const d = (t - p.t) / p.s;
     hw += p.w * Math.exp(-d * d);
   }
-  // slow wobble so the banks are not mathematically smooth
-  return hw + 0.35 * Math.sin(t * 23.0 + 1.2);
+  // Slow wobble so the banks are not mathematically smooth. Divided by SPAN to
+  // hold its PHYSICAL wavelength: this frequency is in parameter space, and t now
+  // covers three times the arc length, so the bare 23.0 would have stretched
+  // every wobble to three times its authored length.
+  return hw + 0.35 * Math.sin((t / SPAN) * 23.0 + 1.2);
 }
 
 // 0 = open pool, 1 = narrowest chute (extra rushing foam there)
@@ -118,15 +236,61 @@ export function narrownessAt(t) {
 // curve itself, so anything that must not stand in the water has to test against
 // `raw`, not `d`. The wobble is up to ±1.6, which is harmless when the channel
 // is a few units wide and enough to plant a tree mid-lake when it is 43.
+// Spatial hash over the samples, so finding the nearest one does not mean
+// scanning all of them. The old linear scan was fine at 300 samples in a
+// 300-unit world; at 2400 samples across ~900 units it becomes the single
+// hottest function in the build — terrainHeight calls it for every ground
+// vertex, and the ground alone is ~49k vertices PER CHUNK.
+//
+// The grid is bucketed at BUCKET units. A query looks in its own cell first,
+// then walks outward ring by ring, and stops as soon as the next ring cannot
+// possibly hold anything closer than the best hit so far. Worst case it still
+// degenerates to a wide search, but the stream is a thin curve so in practice a
+// query touches a handful of samples instead of 2400.
+const BUCKET = 24;
+const sampleGrid = new Map();
+const gkey = (gx, gz) => gx * 73856093 ^ gz * 19349663;
+for (let i = 0; i < streamSamples.length; i++) {
+  const p = streamSamples[i];
+  const k = gkey(Math.floor(p.x / BUCKET), Math.floor(p.z / BUCKET));
+  let list = sampleGrid.get(k);
+  if (!list) sampleGrid.set(k, (list = []));
+  list.push(i);
+}
+
 export function streamAt(x, z) {
+  const gx = Math.floor(x / BUCKET);
+  const gz = Math.floor(z / BUCKET);
   let min = Infinity;
   let ti = 0;
-  for (let i = 0; i < streamSamples.length; i++) {
-    const p = streamSamples[i];
-    const dx = x - p.x;
-    const dz = z - p.z;
-    const d = dx * dx + dz * dz;
-    if (d < min) { min = d; ti = i; }
+  // Rings outward from the query cell. The cap is generous: a point far off the
+  // end of the curve has to keep widening until it reaches the curve at all.
+  for (let ring = 0; ring < 64; ring++) {
+    // Everything in this ring is at least (ring-1)*BUCKET away, so once that
+    // floor exceeds the best distance found, no further ring can improve on it.
+    if (min < Infinity) {
+      const floorD = (ring - 1) * BUCKET;
+      if (floorD > 0 && floorD * floorD > min) break;
+    }
+    let any = false;
+    for (let dz = -ring; dz <= ring; dz++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        // ring shell only — the interior was covered by earlier iterations
+        if (ring > 0 && Math.abs(dx) !== ring && Math.abs(dz) !== ring) continue;
+        const list = sampleGrid.get(gkey(gx + dx, gz + dz));
+        if (!list) continue;
+        any = true;
+        for (const i of list) {
+          const p = streamSamples[i];
+          const ddx = x - p.x;
+          const ddz = z - p.z;
+          const d = ddx * ddx + ddz * ddz;
+          if (d < min) { min = d; ti = i; }
+        }
+      }
+    }
+    // keep widening while nothing has been found at all
+    if (!any && min === Infinity) continue;
   }
   const t = ti / (streamSamples.length - 1);
   const raw = Math.sqrt(min);

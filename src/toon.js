@@ -22,6 +22,9 @@ import * as THREE from 'three';
 // pass barely showed.
 const LIT = new Set(['MeshStandardMaterial', 'MeshPhysicalMaterial', 'MeshLambertMaterial', 'MeshPhongMaterial']);
 
+// Which materials have already been patched, across every toonify call.
+const done = new Set();
+
 export function toonify(scene, opts = {}) {
   const p = {
     // Where the terminator sits, in "how sun-dominated is this pixel" terms.
@@ -65,7 +68,11 @@ export function toonify(scene, opts = {}) {
     ...opts,
   };
 
-  const done = new Set();
+  // Module-level, not per-call: chunks stream in over time, so toonify runs again
+  // each time one lands, and the materials are shared singletons. A per-call set
+  // would re-patch every already-patched material on every chunk — each patch
+  // rewrites onBeforeCompile and changes the cache key, so three.js would discard
+  // and recompile the whole program set nine times over.
   scene.traverse((obj) => {
     const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
     for (const mat of mats) {
