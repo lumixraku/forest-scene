@@ -5,8 +5,8 @@ import * as THREE from 'three';
 // flowing toward (and past) the camera like the reference footage.
 export const STREAM_HALF_WIDTH = 7.0; // widest half-width (pools)
 
-// The brook now crosses the whole 3x3 field, entering at the far upstream corner
-// and leaving at the far downstream one. The middle nine-hundred-unit span
+// The brook runs a 900-unit diagonal across the valley, entering at the far
+// upstream corner and leaving at the far downstream one. The middle 300-unit span
 // (-150..150) keeps its original control points EXACTLY, so the chunk the camera
 // opens in has the same channel, the same pools and the same framing it always
 // had; the new points only extend the curve outward past that.
@@ -16,14 +16,13 @@ export const STREAM_HALF_WIDTH = 7.0; // widest half-width (pools)
 // against t — the terrace drops, the pools, the camera's own start position —
 // is therefore expressed relative to the middle span below rather than as bare
 // numbers.
-// The extensions drift in z as well as x, so the brook enters at one corner of
-// the 3x3 and leaves at the opposite one instead of running straight down the
-// middle row. Keeping z near 0 would have left the four corner chunks and the
-// two side chunks with no water in them at all — six of nine chunks with no
-// terrain focus, since the whole valley shape is derived from distance to the
-// stream. The small irregular steps in z on top of the drift are the meander;
-// without them the extensions read as two straight canals bolted to a winding
-// middle.
+// The extensions drift in z as well as x, so the brook cuts diagonally across the
+// chunks it passes through instead of running straight down one row of them.
+// Keeping z near 0 would have left every chunk off that row with no water at all,
+// and so with no terrain focus, since the whole valley shape is derived from
+// distance to the stream. The small irregular steps in z on top of the drift are
+// the meander; without them the extensions read as two straight canals bolted to
+// a winding middle.
 const points = [
   [-450, 384],
   [-410, 336],
