@@ -259,8 +259,18 @@ const SEED_CELL = 24;
 // by up to half a cell diagonal in each axis, so the cutoff is pushed out by that
 // much to guarantee everything inside FAR_EXACT still takes the exact path.
 const FAR_CUTOFF = FAR_EXACT + SEED_CELL * Math.SQRT2;
-const SEED_MIN = -520;
-const SEED_MAX = 520;
+// The table has to cover enough ground that ANY query outside it is provably
+// farther from the brook than FAR_CUTOFF — then a query off the edge can take the
+// early-out safely and there is no need for a fallback path.
+//
+// The curve itself lives inside ±450, so a box of 450 + FAR_CUTOFF + one cell
+// guarantees it: a point beyond the edge is at least (SEED_MAX - 450) away from any
+// sample, which is comfortably past the cutoff. This matters now that the world is
+// unbounded — the player can walk to x=5000, and the old ±520 box fell back to a
+// full 2400-sample scan out there, which is exactly the 98%-of-CPU path this table
+// was built to avoid.
+const SEED_MIN = -(450 + FAR_CUTOFF + SEED_CELL * 2);
+const SEED_MAX = 450 + FAR_CUTOFF + SEED_CELL * 2;
 const SEED_DIM = Math.ceil((SEED_MAX - SEED_MIN) / SEED_CELL) + 1;
 const seedTable = new Int16Array(SEED_DIM * SEED_DIM);
 {
@@ -279,10 +289,13 @@ const seedTable = new Int16Array(SEED_DIM * SEED_DIM);
   }
 }
 
+// Clamped to the table's edge rather than reporting a miss. Everything outside the
+// box is far enough from the brook to take the early-out (see SEED_MIN), and the
+// edge cell's nearest sample is the right seed for anything beyond it in that
+// direction — the curve does not continue past the box, so distance only grows.
 function seedIndex(x, z) {
-  const gx = Math.round((x - SEED_MIN) / SEED_CELL);
-  const gz = Math.round((z - SEED_MIN) / SEED_CELL);
-  if (gx < 0 || gz < 0 || gx >= SEED_DIM || gz >= SEED_DIM) return -1;
+  const gx = Math.min(SEED_DIM - 1, Math.max(0, Math.round((x - SEED_MIN) / SEED_CELL)));
+  const gz = Math.min(SEED_DIM - 1, Math.max(0, Math.round((z - SEED_MIN) / SEED_CELL)));
   return seedTable[gz * SEED_DIM + gx];
 }
 
@@ -337,11 +350,11 @@ function streamAtUncached(x, z) {
   // cuts the walk off after a ring or two, and the walk still guarantees the exact
   // nearest. Cost falls to the near-bank case everywhere; results are unchanged.
   const N = streamSamples.length;
-  const seed = seedIndex(x, z);
-  let ti = 0;
-  let min = Infinity;
-  if (seed >= 0) {
-    ti = seed;
+  // Always a valid index — seedIndex clamps to the table edge, and the table is
+  // sized so anything past its edge takes the early-out below.
+  let ti = seedIndex(x, z);
+  let min;
+  {
     const p = streamSamples[ti];
     min = (x - p.x) * (x - p.x) + (z - p.z) * (z - p.z);
   }
@@ -365,7 +378,7 @@ function streamAtUncached(x, z) {
   // distance is just inside FAR_EXACT would take the early-out and come back
   // approximate. Measured 7.3 units of error at a true distance of 112.9 before the
   // margin went in.
-  if (seed >= 0 && min > FAR_CUTOFF * FAR_CUTOFF) {
+  if (min > FAR_CUTOFF * FAR_CUTOFF) {
     const t = ti / (N - 1);
     const raw = Math.sqrt(min);
     return { d: raw + Math.sin(x * 0.16) * 0.9 + Math.cos(z * 0.2) * 0.7, t, raw };

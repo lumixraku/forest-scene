@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  CHUNK, CHUNK_REACH, allChunks, chunkKey, chunkCentre, withChunkRng, disposeGroup,
+  CHUNK, CHUNK_REACH, WINDOW, allChunks, chunkKey, chunkCentre, withChunkRng, disposeGroup,
 } from './grid.js';
 import { createGround } from './ground.js';
 import { createGrass, GRASS_BANDS } from './grass.js';
@@ -8,7 +8,9 @@ import { createTrees } from './trees.js';
 import { createFoliage } from './foliage.js';
 import { createStream } from './stream.js';
 
-// Streams the 3x3 field in and out around the camera, one chunk at a time.
+// Streams the field in and out around the camera, one chunk at a time. The grid
+// is unbounded — chunk coordinates run as far as the player walks — so this is
+// also the only thing keeping the resident set finite.
 //
 // The problem this solves is not memory, it is the frame it lands on. Building a
 // chunk means ~49k ground vertices, 60k grass tufts, ~430 trees and a stretch of
@@ -154,7 +156,9 @@ export function createChunkManager(scene, camera, onSceneChanged) {
   // grass. Dropping a step is immediate; building one is queued.
   function reprioritise() {
     const wanted = [];
-    for (const { cx, cz } of allChunks()) {
+    // The candidate window follows the camera, so what counts as "nearby" is
+    // recomputed from where the player actually is rather than from the origin.
+    for (const { cx, cz } of allChunks(camXZ.x, camXZ.y)) {
       const d = centreDist(cx, cz);
       const entry = live.get(chunkKey(cx, cz));
       for (const step of STEPS) {
@@ -166,6 +170,17 @@ export function createChunkManager(scene, camera, onSceneChanged) {
           dropStep(entry, step);
         }
       }
+    }
+    // Anything resident but no longer in the window has to be dropped here.
+    //
+    // The loop above only visits candidates, and on an unbounded grid a chunk left
+    // behind stops being a candidate entirely — so walking in a straight line would
+    // accumulate every chunk ever built and leak until the tab died. On the old
+    // fixed 3x3 this could not happen, because all nine were always visited.
+    for (const entry of [...live.values()]) {
+      if (Math.abs(entry.cx - Math.round(camXZ.x / CHUNK)) <= WINDOW
+        && Math.abs(entry.cz - Math.round(camXZ.y / CHUNK)) <= WINDOW) continue;
+      for (const step of STEPS) dropStep(entry, step);
     }
     // Nearest first, and within one chunk in STEPS order — so a chunk coming into
     // view gets its ground before its grass.
@@ -195,8 +210,8 @@ export function createChunkManager(scene, camera, onSceneChanged) {
       camXZ.set(camera.position.x, camera.position.z);
 
       // Re-plan when the camera crosses into a different half-chunk cell, rather
-      // than every frame: reprioritise walks all nine chunks and re-sorts, and the
-      // answer cannot change over a few metres.
+      // than every frame: reprioritise walks the whole candidate window and
+      // re-sorts, and the answer cannot change over a few metres.
       const ck = `${Math.round(camXZ.x / (CHUNK / 2))},${Math.round(camXZ.y / (CHUNK / 2))}`;
       if (ck !== lastCamKey) {
         lastCamKey = ck;

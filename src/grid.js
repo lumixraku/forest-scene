@@ -1,5 +1,5 @@
-// The world as a 3x3 grid of square chunks, and the seeded randomness that
-// makes a chunk's contents depend on WHERE it is rather than WHEN it loaded.
+// The world as an unbounded grid of square chunks, and the seeded randomness
+// that makes a chunk's contents depend on WHERE it is rather than WHEN it loaded.
 //
 // The scene used to be one 300-unit square built in a fixed order at startup,
 // and `main.js` leaned on that: it replaced Math.random with a seeded generator
@@ -20,28 +20,47 @@
 // spacing: terrainHeight is a continuous function of world x/z, so abutting
 // ground planes meet without a seam as long as the pitch matches the plane size.
 export const CHUNK = 300;
-export const RADIUS = 1; // 1 -> the 3x3 the scene was asked for
 export const HALF = CHUNK / 2;
 
-// Every chunk in the grid, nearest the middle first. The order matters: it is
-// also the load order before any camera distance sorting, so the chunk the
-// camera starts in is always the first one built.
-export function allChunks() {
+// How far out from the camera's own chunk to consider, in chunks. This is a
+// WINDOW ON AN UNBOUNDED GRID, not the size of the world: chunk coordinates run
+// as far as the player walks, and this only says how much of it to think about at
+// once. 2 gives a 5x5 candidate set, which is wider than the furthest step radius
+// so nothing pops in at the edge of view.
+export const WINDOW = 2;
+
+// The chunks worth considering right now, nearest the camera first.
+//
+// This used to be a hardcoded 3x3 around the origin, which made the world 900
+// units across with a hard edge: walk to 450 and the ground simply stopped, in a
+// straight line, with open sky past it. That read as broken terrain rather than as
+// a boundary, and it is not what an endless forest should do.
+//
+// Nothing about the generator needed changing to lift the limit — a chunk's
+// contents are already a pure function of its coordinates (see withChunkRng), so
+// chunk (37, -12) has always been perfectly well defined. Only this function knew
+// about the edge.
+export function allChunks(camX = 0, camZ = 0) {
+  const ccx = Math.round(camX / CHUNK);
+  const ccz = Math.round(camZ / CHUNK);
   const out = [];
-  for (let cz = -RADIUS; cz <= RADIUS; cz++) {
-    for (let cx = -RADIUS; cx <= RADIUS; cx++) out.push({ cx, cz });
+  for (let dz = -WINDOW; dz <= WINDOW; dz++) {
+    for (let dx = -WINDOW; dx <= WINDOW; dx++) out.push({ cx: ccx + dx, cz: ccz + dz });
   }
-  return out.sort((a, b) => (a.cx * a.cx + a.cz * a.cz) - (b.cx * b.cx + b.cz * b.cz));
+  // Nearest the camera first, so the chunk underfoot is always built before its
+  // neighbours.
+  return out.sort((a, b) => {
+    const da = (a.cx - ccx) ** 2 + (a.cz - ccz) ** 2;
+    const db = (b.cx - ccx) ** 2 + (b.cz - ccz) ** 2;
+    return da - db;
+  });
 }
 
 export const chunkKey = (cx, cz) => `${cx},${cz}`;
 
 // World-space centre of a chunk, and the chunk containing a world position.
 export const chunkCentre = (cx, cz) => ({ x: cx * CHUNK, z: cz * CHUNK });
-export const chunkAt = (x, z) => ({
-  cx: Math.max(-RADIUS, Math.min(RADIUS, Math.round(x / CHUNK))),
-  cz: Math.max(-RADIUS, Math.min(RADIUS, Math.round(z / CHUNK))),
-});
+export const chunkAt = (x, z) => ({ cx: Math.round(x / CHUNK), cz: Math.round(z / CHUNK) });
 
 // Half the diagonal of a chunk — the distance from its centre to a corner. Used
 // by the loader: a chunk is "within range R" if any part of it could be, which
