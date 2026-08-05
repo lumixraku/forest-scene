@@ -2,29 +2,22 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
 import { createWorld } from './world.js';
-import { createGround } from './ground.js';
+import { createGroundLayer } from './ground.js';
+import { createStreaming } from './streaming.js';
 import { createGrass } from './grass.js';
 import { createTrees } from './trees.js';
 import { createFoliage } from './foliage.js';
 import { createParticles } from './particles.js';
 import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
-import { toonify } from './toon.js';
+import { toonify, toonifyMaterials } from './toon.js';
 import { updateWind } from './wind.js';
-import { streamCurve, levelAt } from './streamPath.js';
+import { streamCurve, levelAt, HOME_T, LOOK_T } from './streamPath.js';
+import { installGlobalRandom } from './rng.js';
 
 // Deterministic randomness so the forest layout is identical on every load
 // (makes the scene stable and tunable instead of reshuffling each reload).
-(() => {
-  let s = 20250614;
-  Math.random = () => {
-    s |= 0;
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-})();
+installGlobalRandom();
 
 // ---- renderer ----
 // MSAA is inert here: EffectComposer renders the scene into its own render
@@ -43,10 +36,12 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-// The sun never moves and nothing is repositioned on the CPU — the only motion
-// is the wind vertex shader, and its sway is far under one texel of a 1024 map
-// stretched over the whole ~360m field. So the shadow map is rendered once at
-// startup instead of re-drawing ~860k triangles every single frame.
+// The shadow map is not redrawn every frame — the only per-frame motion is the
+// wind vertex shader, whose sway is far under one shadow texel. It is refreshed
+// on demand instead (see the loop at the bottom): when the camera has moved the
+// shadow box far enough to matter, or when a streamed cell brings new casters.
+// This is a change from rendering it exactly once at startup, which was only
+// sound while the world was a fixed field that existed in full from frame one.
 renderer.shadowMap.autoUpdate = false;
 renderer.shadowMap.needsUpdate = true;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -56,34 +51,59 @@ document.body.appendChild(renderer.domElement);
 
 // ---- scene & camera ----
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
+// Far plane reaches past the ground/far-tree radius so the treeline runs to the
+// horizon instead of being clipped mid-forest.
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1600);
 // above a lower pool looking slightly down the terraced cascade, so the
 // green pools show between the white steps (like the reference footage)
-const camP = streamCurve.getPointAt(0.36);
-const lookP = streamCurve.getPointAt(0.58);
-const LOOK = new THREE.Vector3(lookP.x, levelAt(0.58) + 0.5, lookP.z);
-camera.position.set(camP.x - 2, levelAt(0.36) + 7.0, camP.z + 8);
+const camP = streamCurve.getPointAt(HOME_T);
+const lookP = streamCurve.getPointAt(LOOK_T);
+const LOOK = new THREE.Vector3(lookP.x, levelAt(LOOK_T) + 0.5, lookP.z);
+camera.position.set(camP.x - 2, levelAt(HOME_T) + 7.0, camP.z + 8);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
 const world = createWorld(scene);
 
-// ---- valley ground + instanced grass ----
-scene.add(createGround());
-const grass = createGrass(scene);
+// ---- streaming world ----
+// Layer radii, in world units. Each is a knob: how far out that layer exists.
+// The ground and the far trees reach the horizon so there is never an empty
+// skyline; the detailed layers stop where their detail stops being legible.
+const RADIUS = {
+  ground: 700,
+  grass: 150,
+  foliage: 220,
+  treesNear: 260,
+  treesFar: 700,
+};
+
+const streaming = createStreaming();
+const ground = createGroundLayer(scene, { radius: RADIUS.ground });
+streaming.register(ground.layer);
+const grass = createGrass(scene, { radius: RADIUS.grass });
+streaming.register(grass.layer);
 
 // ---- forest ----
-createTrees(scene);
+// Two tiers with disjoint species sets: the close-range broadleaves out to
+// treesNear, and the background conifers on a coarser grid all the way to the
+// horizon. See trees.js for why the sets must not overlap.
+const trees = createTrees(scene);
+streaming.register({ ...trees.layers[0], radius: RADIUS.treesNear });
+// A coarser grid for the far tier: at 100m the horizon ring would be ~150 cells
+// each holding several InstancedMeshes, which is hundreds of draw calls for trees
+// a few pixels tall. Bigger cells trade culling precision for far fewer meshes.
+streaming.register({ ...trees.layers[1], radius: RADIUS.treesFar, size: 350 });
 
 // ---- flowers + bushes ----
-createFoliage(scene);
+const foliage = createFoliage(scene);
+streaming.register({ ...foliage.layer, radius: RADIUS.foliage });
 
 // ---- water + foam + boulders ----
 const stream = createStream(scene);
 scene.add(stream.group);
 
 // ---- dust + birds ----
-const particles = createParticles(scene, new THREE.Vector2(0, -16));
+const particles = createParticles(scene, camera);
 
 // ---- cel shading ----
 // Must run after every scene module, since it patches the materials they built.
@@ -91,6 +111,12 @@ const particles = createParticles(scene, new THREE.Vector2(0, -16));
 // one flat tone on purpose, and the warm-lit / cool-shadow split with a hard
 // terminator is what turns each shell back into a readable form.
 toonify(scene);
+// Streaming layers have no geometry in the scene yet, so the traversal above
+// cannot find their materials. They are shared across every cell, so handing them
+// over once here covers all cells ever built.
+toonifyMaterials([
+  ground.material, grass.material, ...trees.materials, ...foliage.materials,
+]);
 
 // ---- controls: free exploration ----
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -138,6 +164,20 @@ addEventListener('resize', () => {
   composer.setSize(innerWidth, innerHeight);
 });
 
+// Handles for the headless-Chrome capture harness in .shot/ — it drives the
+// camera and reads renderer.info to check draw calls, streaming and leaks.
+// THREE is included so the harness can raycast and build vectors: it runs its
+// code through Runtime.evaluate, where a bare 'three' specifier cannot resolve.
+window.__scene = { scene, camera, renderer, controls, streaming, THREE, world };
+
+// The shadow map is redrawn only when something that affects it changes: the
+// camera moving the box, or a cell arriving with new casters in it. Rebuilding
+// every frame would re-draw the whole visible forest into the depth map.
+let shadowDirty = true;
+streaming.onCellLoaded(() => { shadowDirty = true; });
+const lastShadowPos = new THREE.Vector3(Infinity, 0, Infinity);
+const SHADOW_STEP = 8; // redraw after this much camera travel
+
 // ---- animation loop ----
 const clock = new THREE.Clock();
 function animate() {
@@ -145,10 +185,20 @@ function animate() {
   const t = clock.elapsedTime;
   move(dt);
   updateWind(t);
+  streaming.update(camera);
+  world.followSky(camera);
   stream.update(dt);
   particles.update(dt, t);
   controls.update();
   grass.update(camera);
+
+  if (shadowDirty || lastShadowPos.distanceToSquared(camera.position) > SHADOW_STEP * SHADOW_STEP) {
+    lastShadowPos.copy(camera.position);
+    world.focusShadow(camera);
+    renderer.shadowMap.needsUpdate = true;
+    shadowDirty = false;
+  }
+
   composer.render();
   requestAnimationFrame(animate);
 }

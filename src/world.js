@@ -46,12 +46,20 @@ const PALETTE = {
   ambGround: new THREE.Color('#8a7a4a'),
 };
 
+// Half-width of the sun's shadow box, in world units. 110 covers well past the
+// grass radius while keeping a 1024 map at ~0.21 units per texel.
+const SHADOW_EXTENT = 110;
+// How far up the sun direction the light sits. Must clear the tallest crown plus
+// the terrain relief, or near casters fall outside the depth slab.
+const SHADOW_BACK_OFF = 260;
+
 export function createWorld(scene) {
   scene.background = PALETTE.skyBottom.clone();
   // No fog. Depth comes from the crowns' own value range and the warm/cool light
   // split instead — haze washing out the distance is not wanted here.
 
-  scene.add(makeSkyDome());
+  const sky = makeSkyDome();
+  scene.add(sky);
 
   // Cool sky fill: the shadow side has to stay open and readable, and it has to
   // be a DIFFERENT HUE from the sun rather than a darker version of it. Backed
@@ -68,32 +76,75 @@ export function createWorld(scene) {
   // turn through a terminator instead of being uniformly capped.
   const sunPos = new THREE.Vector3(60, 92, -120);
   const sun = new THREE.DirectionalLight(PALETTE.sun, 3.2);
-  // shadow camera sits far along the sun direction so its static box can
-  // cover the whole ~300m field — soft low-res shadows everywhere, at any
-  // camera distance, rather than a crisp box that follows the camera
-  sun.position.copy(sunPos).multiplyScalar(2);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
-  const s = 180;
+  // The shadow box FOLLOWS THE CAMERA rather than covering a fixed field.
+  //
+  // It used to be a static ±180 box, which worked only because the world was a
+  // fixed 300m and everything in it existed from startup. Neither holds now: the
+  // world is unbounded, and stretching one 1024 map over it would leave about a
+  // texel per metre — shadows so coarse they read as dirt. A ±SHADOW_EXTENT box
+  // tracking the camera gives a texel every ~0.2m, which is sharper than the
+  // original, at the cost of only shadowing the camera's neighbourhood — where
+  // shadows are legible anyway.
+  const s = SHADOW_EXTENT;
   sun.shadow.camera.left = -s;
   sun.shadow.camera.right = s;
   sun.shadow.camera.top = s;
   sun.shadow.camera.bottom = -s;
-  // The light now sits ~312 units out at a shallow angle, so the depth range has
-  // to be far deeper than the old 20-400: a grazing sun throws shadows the length
-  // of the field, and anything outside this slab silently stops casting.
-  sun.shadow.camera.near = 20;
-  sun.shadow.camera.far = 640;
+  // A grazing sun throws long shadows, so the slab has to be deep enough that
+  // casters behind the box still reach into it; anything outside silently stops
+  // casting. SHADOW_BACK_OFF is how far up the sun direction the light sits.
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = SHADOW_BACK_OFF * 2;
   sun.shadow.bias = -0.0006;
   sun.shadow.normalBias = 0.2;
   scene.add(sun);
   scene.add(sun.target);
 
-  return { sun, sunPos, hemi, PALETTE };
+  // Direction from the target to the light, normalised once.
+  const sunDir = sunPos.clone().normalize();
+
+  // Re-aim the shadow box at a point in front of the camera. Looking ahead rather
+  // than straight down means the box is spent on what is actually in frame, not
+  // on the half of it behind the viewer.
+  const aim = new THREE.Vector3();
+  const fwd = new THREE.Vector3();
+
+  // The dome is centred on the camera. It has to be bigger than the far plane to
+  // stay behind everything, which means it cannot also be a fixed object in the
+  // world — the camera would eventually walk out through its shell.
+  function followSky(camera) {
+    sky.position.set(camera.position.x, 0, camera.position.z);
+  }
+
+  function focusShadow(camera) {
+    camera.getWorldDirection(fwd);
+    fwd.y = 0;
+    if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
+    fwd.normalize();
+    aim.copy(camera.position).addScaledVector(fwd, SHADOW_EXTENT * 0.55);
+    aim.y = 0;
+    sun.target.position.copy(aim);
+    sun.target.updateMatrixWorld();
+    sun.position.copy(aim).addScaledVector(sunDir, SHADOW_BACK_OFF);
+    sun.updateMatrixWorld();
+    sun.shadow.camera.updateProjectionMatrix();
+  }
+
+  return { sun, sunPos, hemi, PALETTE, focusShadow, followSky, SHADOW_EXTENT };
 }
 
+// Dome radius. It has to sit BEYOND the furthest content (the ground and far
+// trees reach 700) and INSIDE the camera's far plane of 1600, or it is clipped
+// away entirely and the flat scene.background shows through instead of the
+// gradient — which reads as a washed-out sky and drags the whole frame's
+// exposure with it. Since the dome follows the camera it never needs to be
+// larger than that; only a world-fixed dome would have to span the map.
+const SKY_RADIUS = 1200;
+
 function makeSkyDome() {
-  const geo = new THREE.SphereGeometry(500, 32, 16);
+  const geo = new THREE.SphereGeometry(SKY_RADIUS, 32, 16);
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,

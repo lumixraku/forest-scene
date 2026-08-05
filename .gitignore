@@ -2,3 +2,9 @@ node_modules
 dist
 .DS_Store
 *.log
+
+# Claude Code worktrees — a nested checkout of this same repo, not source
+.claude/
+
+# Reference captures for the .shot/ harness: large binaries, regenerable
+.shot/*.png

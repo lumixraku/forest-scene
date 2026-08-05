@@ -1,12 +1,30 @@
 import * as THREE from 'three';
 
 // Drifting dust motes caught in the light + small birds circling the clearing.
-export function createParticles(scene, clearing) {
+//
+// Both follow the camera, because both are small local effects that used to be
+// pinned to the original clearing at (0, -16). On a 300m map that was always in
+// view; on this one you walk out of the dust in a few seconds and the sunbeams go
+// empty, with 160 motes and 6 birds still being simulated somewhere behind you.
+//
+// They follow in two different ways, and the difference matters:
+//
+//   * The dust box RE-CENTRES CONTINUOUSLY, but the motes keep their own world
+//     positions and drift as before — only the wrap boundary moves. So a mote
+//     leaving the box behind the camera is recycled to a new spot inside it,
+//     rather than the whole cloud sliding along locked to the viewer. Motes that
+//     moved rigidly with the camera would read as dirt on the lens.
+//
+//   * The birds' circle centre JUMPS, with hysteresis. Their positions are driven
+//     from the centre every frame, so a centre that crept along would drag all six
+//     birds sideways through the air. Instead the centre stays put until the camera
+//     is well outside the flight circle, then re-homes ahead of it.
+export function createParticles(scene, camera) {
   // ---- dust motes ----
   const N = 160;
   const pos = new Float32Array(N * 3);
   const vel = new Float32Array(N * 3);
-  const box = { x: 34, y: 14, z: 34, cx: clearing.x, cy: 7, cz: clearing.y };
+  const box = { x: 34, y: 14, z: 34, cx: camera.position.x, cy: 7, cz: camera.position.z };
   for (let i = 0; i < N; i++) {
     pos[i * 3] = box.cx + (Math.random() - 0.5) * box.x;
     pos[i * 3 + 1] = box.cy + Math.random() * box.y;
@@ -43,16 +61,34 @@ export function createParticles(scene, clearing) {
       speed: 0.18 + Math.random() * 0.12,
       phase: Math.random() * Math.PI * 2,
       height: 15 + Math.random() * 6,
-      cx: clearing.x,
-      cz: clearing.y,
+      cx: camera.position.x,
+      cz: camera.position.z,
       flap: Math.random() * Math.PI * 2,
     });
     scene.add(b);
     birds.push(b);
   }
 
+  // How far the camera must get from the flock's centre before the birds re-home.
+  // Larger than the widest flight circle (22 + 16 = 38), so the camera has to
+  // genuinely leave the airspace rather than nudging the flock every few steps.
+  const BIRD_REHOME_DIST = 52;
+
   return {
     update(dt, t) {
+      const camX = camera.position.x;
+      const camZ = camera.position.z;
+      // Move the wrap boundary, not the motes: they go on drifting under their own
+      // velocities and are recycled against the new box.
+      box.cx = camX;
+      box.cz = camZ;
+
+      if (Math.hypot(birds[0].userData.cx - camX, birds[0].userData.cz - camZ) > BIRD_REHOME_DIST) {
+        for (const b of birds) {
+          b.userData.cx = camX;
+          b.userData.cz = camZ;
+        }
+      }
       const arr = g.attributes.position.array;
       for (let i = 0; i < N; i++) {
         arr[i * 3] += vel[i * 3] * dt + Math.sin(t * 0.5 + i) * 0.01;

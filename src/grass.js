@@ -11,12 +11,21 @@ import { streamAt, levelAt, halfWidthAt, inWater } from './streamPath.js';
 // so the meadow shades like a continuous sunlit surface instead of a mass of
 // dark random facets.
 //
-// The field is split into a grid of chunks, one InstancedMesh each:
-//  - chunks outside the camera frustum are culled by three.js (a single
+// One InstancedMesh per streamed cell:
+//  - cells outside the camera frustum are culled by three.js (a single
 //    field-sized InstancedMesh always drew all 60k tufts)
-//  - distant chunks thin out by truncating instanceCount — placement order
+//  - distant cells thin out by truncating instanceCount — placement order
 //    is random, so a lower count IS a uniform density reduction
-export function createGrass(scene) {
+//
+// Density is expressed per square metre rather than as a total. The original
+// scattered 60,000 tufts over a 290x290 field by rejection sampling, which works
+// out to 1.6535 attempts/m² at a 43% acceptance rate; a 100m cell therefore makes
+// ATTEMPTS_PER_M2 * 10,000 attempts and lands ~7,130 tufts. Keeping the rate
+// rather than the total is what makes the meadow underfoot identical whether the
+// world is 300m or unbounded.
+const ATTEMPTS_PER_M2 = 1.6535;
+
+export function createGrass(scene, { radius }) {
   const geo = buildTuftGeometry();
 
   const mat = new THREE.MeshStandardMaterial({
@@ -28,89 +37,100 @@ export function createGrass(scene) {
   applyWind(mat, { strength: 0.1, freq: 1.9, heightFactor: 0.8 });
   keepAuthoredNormals(mat);
 
-  const COUNT = 60000;
-  const FIELD = 290;
-  const GRID = 8; // 8x8 chunks
-  const CHUNK = FIELD / GRID;
-
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
   const deep = new THREE.Color('#48661f');
   const sunlit = new THREE.Color('#9cb149');
 
-  // bucket the placements per chunk first, then build one mesh per chunk
-  const buckets = Array.from({ length: GRID * GRID }, () => ({ mats: [], cols: [] }));
-  let placed = 0;
-  let attempts = 0;
-  while (placed < COUNT && attempts < COUNT * 14) {
-    attempts++;
-    const x = (Math.random() - 0.5) * FIELD;
-    const z = (Math.random() - 0.5) * FIELD;
-    const { d: sd, t } = streamAt(x, z);
+  // Every built cell, for the distance-based thinning below.
+  const cells = [];
 
-    // dense near the stream corridor, thinning up the slopes — but with a
-    // sparse band along the waterline itself, so the bank plants (flower
-    // bushes, sedge, spikes) read instead of a wall of tall grass
-    const bankD = sd - halfWidthAt(t);
-    const bankK = 0.38 + 0.62 * THREE.MathUtils.smoothstep(bankD, 1.5, 9);
-    const keep = THREE.MathUtils.clamp(1.55 - sd / 62, 0.12, 1) * bankK;
-    if (Math.random() > keep) continue;
-    const h = terrainHeight(x, z);
-    if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
-    if (inWater(x, z, 0.1)) continue;
+  function build(cell) {
+    const attempts = Math.round(ATTEMPTS_PER_M2 * cell.size * cell.size);
+    const mats = [];
+    const cols = [];
 
-    // shorter tufts near the water's edge; tight scale range keeps the lawn
-    // even, like it's been trimmed
-    const s = (0.6 + Math.random() * 0.2) * (0.8 + 0.2 * THREE.MathUtils.smoothstep(bankD, 0, 8));
-    dummy.position.set(x, h - 0.05, z);
-    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-    dummy.scale.set(s, s * (0.9 + Math.random() * 0.2), s);
-    dummy.updateMatrix();
+    for (let a = 0; a < attempts; a++) {
+      const x = cell.x0 + Math.random() * cell.size;
+      const z = cell.z0 + Math.random() * cell.size;
+      const { d: sd, t } = streamAt(x, z);
 
-    // sunnier (yellower) tufts on open slopes, deeper green near the water
-    const sunK = THREE.MathUtils.clamp(sd / 45, 0, 1) * 0.5 + Math.random() * 0.5;
-    col.copy(deep).lerp(sunlit, sunK);
-    col.offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.06);
+      // dense near the stream corridor, thinning up the slopes — but with a
+      // sparse band along the waterline itself, so the bank plants (flower
+      // bushes, sedge, spikes) read instead of a wall of tall grass
+      const bankD = sd - halfWidthAt(t);
+      const bankK = 0.38 + 0.62 * THREE.MathUtils.smoothstep(bankD, 1.5, 9);
+      const keep = THREE.MathUtils.clamp(1.55 - sd / 62, 0.12, 1) * bankK;
+      if (Math.random() > keep) continue;
+      const h = terrainHeight(x, z);
+      if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
+      if (inWater(x, z, 0.1)) continue;
 
-    const cx = Math.min(GRID - 1, Math.floor((x + FIELD / 2) / CHUNK));
-    const cz = Math.min(GRID - 1, Math.floor((z + FIELD / 2) / CHUNK));
-    const bucket = buckets[cz * GRID + cx];
-    bucket.mats.push(dummy.matrix.clone());
-    bucket.cols.push(col.clone());
-    placed++;
-  }
+      // shorter tufts near the water's edge; tight scale range keeps the lawn
+      // even, like it's been trimmed
+      const s = (0.6 + Math.random() * 0.2) * (0.8 + 0.2 * THREE.MathUtils.smoothstep(bankD, 0, 8));
+      dummy.position.set(x, h - 0.05, z);
+      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      dummy.scale.set(s, s * (0.9 + Math.random() * 0.2), s);
+      dummy.updateMatrix();
 
-  const chunks = [];
-  buckets.forEach((bucket, bi) => {
-    const n = bucket.mats.length;
-    if (n === 0) return;
-    const mesh = new THREE.InstancedMesh(geo, mat, n);
+      // sunnier (yellower) tufts on open slopes, deeper green near the water
+      const sunK = THREE.MathUtils.clamp(sd / 45, 0, 1) * 0.5 + Math.random() * 0.5;
+      col.copy(deep).lerp(sunlit, sunK);
+      col.offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.06);
+
+      mats.push(dummy.matrix.clone());
+      cols.push(col.clone());
+    }
+
+    if (!mats.length) return null;
+    const mesh = new THREE.InstancedMesh(geo, mat, mats.length);
     mesh.receiveShadow = true;
-    for (let i = 0; i < n; i++) {
-      mesh.setMatrixAt(i, bucket.mats[i]);
-      mesh.setColorAt(i, bucket.cols[i]);
+    for (let i = 0; i < mats.length; i++) {
+      mesh.setMatrixAt(i, mats[i]);
+      mesh.setColorAt(i, cols[i]);
     }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere(); // instance-aware bounds -> real frustum culling
     scene.add(mesh);
 
-    const cx = (bi % GRID + 0.5) * CHUNK - FIELD / 2;
-    const cz = (Math.floor(bi / GRID) + 0.5) * CHUNK - FIELD / 2;
-    chunks.push({ mesh, full: n, centre: new THREE.Vector2(cx, cz) });
-  });
+    const entry = { mesh, full: mats.length, centre: new THREE.Vector2(cell.cx, cell.cz) };
+    cells.push(entry);
+    // A new cell has never been thinned, so the next update() has to run even if
+    // the camera is standing still. Without this a cell that streams in while the
+    // camera is stationary keeps full density forever — the thinning used to be
+    // safe to skip only because every chunk existed before the first update().
+    dirty = true;
+    return entry;
+  }
+
+  function dispose(entry) {
+    if (!entry) return;
+    scene.remove(entry.mesh);
+    // Releases instanceMatrix/instanceColor only — the tuft geometry and material
+    // are shared by every cell and must survive.
+    entry.mesh.dispose();
+    const i = cells.indexOf(entry);
+    if (i >= 0) cells.splice(i, 1);
+  }
 
   // distance-based density: full within 60m of the camera, fading to 15%
   // far out where a tuft is subpixel anyway. Re-evaluated only after the
   // camera has actually moved.
   const lastCam = new THREE.Vector2(Infinity, Infinity);
   const camXZ = new THREE.Vector2();
+  let dirty = true;
+
   return {
+    material: mat,
+    layer: { id: 'grass', radius, build, dispose },
     update(camera) {
       camXZ.set(camera.position.x, camera.position.z);
-      if (camXZ.distanceToSquared(lastCam) < 2.25) return;
+      if (!dirty && camXZ.distanceToSquared(lastCam) < 2.25) return;
+      dirty = false;
       lastCam.copy(camXZ);
-      for (const c of chunks) {
+      for (const c of cells) {
         const dist = c.centre.distanceTo(camXZ);
         const f = THREE.MathUtils.clamp(1 - (dist - 60) / 130, 0.15, 1);
         c.mesh.count = Math.ceil(c.full * f);

@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { applyCanopyWind, keepAuthoredNormals } from './wind.js';
-import { bucketFor, addChunkedInstances } from './chunks.js';
+import { cellSeed, withSeed } from './rng.js';
 import { terrainHeight } from './terrain.js';
-import { streamAt, levelAt, streamCurve, inWater } from './streamPath.js';
+import { streamAt, levelAt, streamCurve, inWater, HOME_T } from './streamPath.js';
 import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 
 // Storybook forest: every crown is a SOLID MASS, not a cloud of leaf cards.
@@ -34,6 +34,23 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 //   ginkgo     — pale bent trunks by the banks, golden domes
 //   spruce     — darkest, tallest cones filling the background slopes
 // Everything is InstancedMesh — 2-4 draw calls per species.
+//
+// Trees are built one cell at a time as the camera moves, in TWO tiers with
+// DISJOINT species sets:
+//
+//   near (pagoda, high pine, ginkgo) — the close-range species, 260 units
+//   far  (pine, spruce)              — the background species, out to the horizon
+//
+// Disjointness is the whole reason this is safe. The obvious split — "near tier
+// draws everything, far tier draws the cheap subset" — makes both tiers place the
+// same spruce in the same cell, so the near field gets double trees; and any tier
+// whose species set changes with distance makes trees appear and vanish as the
+// boundary sweeps past. With no species in both tiers, neither can happen.
+//
+// The cost of a finite radius is that pagodas/ginkgos fade in at 260 units. They
+// are held to within 45-110 units of the STREAM by their own minD/maxD, so they
+// were never a horizon feature; the horizon is pine and spruce, which is what the
+// far tier carries.
 export function createTrees(scene) {
   const pagodaBark = makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false });
   // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
@@ -71,73 +88,164 @@ export function createTrees(scene) {
   const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
   const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
 
-  // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
-  const pagodas = placeSpecies({
-    count: 70, minD: 10, maxD: 100, sRange: [0.9, 1.4],
-    // hand-placed trees framing the opening camera view from both banks
-    fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
-  });
-  addTrunks(scene, pagodas, makeTrunkGeo({ topR: 0.13, botR: 0.4, h: 11.8, flare: 3.4 }), pagodaBark);
-  addCanopy(scene, pagodas, pagodaTex, {
-    crownBase: 3.4, crownTop: 12.4, radius: 3.4,
-    profile: 'umbrella',
-    // These tints MULTIPLY the canopy texture, so a low `light` cancels out the
-    // lighter palettes above — that is exactly what was happening: bright leaves
-    // authored in the texture, then multiplied back down to dark here. `light`
-    // now sits near 1 and the saturation range is narrow, so the tint separates
-    // one tree from its neighbour without dimming any of them.
-    hue: 0.27, sat: 0.22, light: 0.9,
-  });
+  // Every species' shared assets, built ONCE here rather than per cell: the trunk
+  // profile, the three crown lathe variants, and the materials. A cell only ever
+  // produces instance matrices, which is what makes streaming them cheap.
+  //
+  // `density` is attempts per square metre, measured against the original
+  // 290x290 field rather than derived from the nominal counts — the accept rate
+  // varies a lot by species (ginkgo 15%, pine 74%), so attempts is the number a
+  // per-area sampler needs. Achieved counts over that field: pagoda 70, pine 90,
+  // high 45, ginkgo 38, spruce 110 — i.e. all five reached their nominal count,
+  // so near-field density is unchanged by construction.
+  const SPECIES = {
+    // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
+    pagoda: {
+      density: 0.00153, minD: 10, maxD: 100, sRange: [0.9, 1.4],
+      // hand-placed trees framing the opening camera view from both banks
+      fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
+      trunk: { topR: 0.13, botR: 0.4, h: 11.8, flare: 3.4 },
+      bark: pagodaBark,
+      tex: pagodaTex,
+      crown: {
+        crownBase: 3.4, crownTop: 12.4, radius: 3.4,
+        profile: 'umbrella',
+        // These tints MULTIPLY the canopy texture, so a low `light` cancels out the
+        // lighter palettes above — that is exactly what was happening: bright leaves
+        // authored in the texture, then multiplied back down to dark here. `light`
+        // now sits near 1 and the saturation range is narrow, so the tint separates
+        // one tree from its neighbour without dimming any of them.
+        hue: 0.27, sat: 0.22, light: 0.9,
+      },
+    },
 
-  // ---- pine — mid-ground conifer, full cone from near the ground ----
-  const pines = placeSpecies({ count: 90, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
-  addTrunks(scene, pines, makeTrunkGeo({ topR: 0.11, botR: 0.4, h: 12, flare: 3.2 }), pineBark);
-  addCanopy(scene, pines, pineTex, {
-    crownBase: 2.0, crownTop: 13.4, radius: 2.7,
-    profile: 'cone',
-    hue: 0.29, sat: 0.24, light: 0.88,
-  });
+    // ---- pine — mid-ground conifer, full cone from near the ground ----
+    pine: {
+      density: 0.00145, minD: 16, maxD: 130, sRange: [0.85, 1.4],
+      trunk: { topR: 0.11, botR: 0.4, h: 12, flare: 3.2 },
+      bark: pineBark,
+      tex: pineTex,
+      crown: {
+        crownBase: 2.0, crownTop: 13.4, radius: 2.7,
+        profile: 'cone',
+        hue: 0.29, sat: 0.24, light: 0.88,
+      },
+    },
 
-  // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
-  const highPines = placeSpecies({ count: 45, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
-  addTrunks(scene, highPines, makeTrunkGeo({ topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 }), highBark);
-  addDeadSticks(scene, highPines, highBark);
-  addCanopy(scene, highPines, highTex, {
-    crownBase: 5.6, crownTop: 15.8, radius: 2.9,
-    profile: 'dome',
-    hue: 0.28, sat: 0.22, light: 0.92,
-  });
+    // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
+    high: {
+      density: 0.00094, minD: 20, maxD: 110, sRange: [0.9, 1.4],
+      sticks: true,
+      trunk: { topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 },
+      bark: highBark,
+      tex: highTex,
+      crown: {
+        crownBase: 5.6, crownTop: 15.8, radius: 2.9,
+        profile: 'dome',
+        hue: 0.28, sat: 0.22, light: 0.92,
+      },
+    },
 
-  // ---- ginkgo — pale bent trunks near the banks, golden domes ----
-  // sRange is much smaller than it used to be: the old card crowns only filled a
-  // fraction of their nominal radius, so the ginkgo was scaled up to compensate.
-  // A solid dome fills all of it, and at the old scale these became 13m golden
-  // balloons that swallowed the foreground.
-  const ginkgos = placeSpecies({
-    count: 38, minD: 12, maxD: 45, sRange: [0.85, 1.25],
-    fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
-  });
-  addTrunks(scene, ginkgos, makeTrunkGeo({ topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 }), ginkgoBark);
-  addCanopy(scene, ginkgos, ginkgoTex, {
-    crownBase: 2.6, crownTop: 9.6, radius: 2.7,
-    profile: 'dome',
-    // Held below the greens. Gold at the same brightness as the canopy around it
-    // stops being an accent — 38 ginkgos lit to 0.94 read as half the forest
-    // being autumn, which is not what the banks are for.
-    hue: 0.13, sat: 0.26, light: 0.82,
-  });
+    // ---- ginkgo — pale bent trunks near the banks, golden domes ----
+    // sRange is much smaller than it used to be: the old card crowns only filled a
+    // fraction of their nominal radius, so the ginkgo was scaled up to compensate.
+    // A solid dome fills all of it, and at the old scale these became 13m golden
+    // balloons that swallowed the foreground.
+    ginkgo: {
+      density: 0.00300, minD: 12, maxD: 45, sRange: [0.85, 1.25],
+      fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
+      trunk: { topR: 0.14, botR: 0.4, h: 8.6, flare: 2.6, bend: 0.4 },
+      bark: ginkgoBark,
+      tex: ginkgoTex,
+      crown: {
+        crownBase: 2.6, crownTop: 9.6, radius: 2.7,
+        profile: 'dome',
+        // Held below the greens. Gold at the same brightness as the canopy around it
+        // stops being an accent — 38 ginkgos lit to 0.94 read as half the forest
+        // being autumn, which is not what the banks are for.
+        hue: 0.13, sat: 0.26, light: 0.82,
+      },
+    },
 
-  // ---- spruce — darkest, tallest cones on the background slopes ----
-  const spruces = placeSpecies({ count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
-  addTrunks(scene, spruces, makeTrunkGeo({ topR: 0.08, botR: 0.46, h: 17, flare: 2.8 }), spruceBark);
-  addCanopy(scene, spruces, darkTex, {
-    crownBase: 1.8, crownTop: 18.4, radius: 2.8,
-    profile: 'cone',
-    // The background species, so it stays the coolest and slightly the deepest of
-    // the five — but only slightly. This is the one that used to turn the far
-    // slopes into a black wall.
-    hue: 0.31, sat: 0.24, light: 0.84,
-  });
+    // ---- spruce — darkest, tallest cones on the background slopes ----
+    spruce: {
+      density: 0.00239, minD: 48, maxD: 140, sRange: [0.7, 1.45],
+      trunk: { topR: 0.08, botR: 0.46, h: 17, flare: 2.8 },
+      bark: spruceBark,
+      tex: darkTex,
+      crown: {
+        crownBase: 1.8, crownTop: 18.4, radius: 2.8,
+        profile: 'cone',
+        // The background species, so it stays the coolest and slightly the deepest of
+        // the five — but only slightly. This is the one that used to turn the far
+        // slopes into a black wall.
+        hue: 0.31, sat: 0.24, light: 0.84,
+      },
+    },
+  };
+
+  // Resolve each species' shared geometry and materials once.
+  for (const s of Object.values(SPECIES)) {
+    s.trunkGeo = makeTrunkGeo(s.trunk);
+    s.trunkMat = new THREE.MeshStandardMaterial({ map: s.bark, roughness: 0.95, metalness: 0 });
+    if (s.sticks) {
+      s.stickGeo = makeStickGeo();
+      s.stickMat = new THREE.MeshStandardMaterial({ map: s.bark, roughness: 1, metalness: 0 });
+    }
+    Object.assign(s, makeCanopyAssets(s.tex, s.crown));
+  }
+
+  const NEAR = ['pagoda', 'high', 'ginkgo'];
+  const FAR = ['pine', 'spruce'];
+  const materials = [];
+  for (const s of Object.values(SPECIES)) {
+    materials.push(s.trunkMat, s.canopyMat);
+    if (s.stickMat) materials.push(s.stickMat);
+  }
+
+  return {
+    // Handed to toonifyMaterials: these materials exist from startup but the
+    // meshes that use them do not, so traversing the scene would miss them.
+    materials,
+    layers: [
+      makeTreeLayer(scene, SPECIES, NEAR, 'treesNear'),
+      makeTreeLayer(scene, SPECIES, FAR, 'treesFar'),
+    ],
+  };
+}
+
+// One streaming layer covering a set of species. `build` places each species in
+// the cell and returns every mesh it added so `dispose` can take them back out.
+function makeTreeLayer(scene, SPECIES, names, id) {
+  return {
+    id,
+    build(cell) {
+      const meshes = [];
+      for (let k = 0; k < names.length; k++) {
+        const s = SPECIES[names[k]];
+        // Each species gets its own sub-sequence, so adding or reordering species
+        // cannot shift another one's layout. withSeed is re-entrant — the cell's
+        // own generator is restored when this returns.
+        withSeed(cellSeed(cell.i, cell.j, k * 977 + 31), () => {
+          const trees = placeInCell(s, cell);
+          if (!trees.length) return;
+          addTrunks(scene, meshes, trees, s);
+          if (s.sticks) addDeadSticks(scene, meshes, trees, s);
+          addCanopy(scene, meshes, trees, s);
+        });
+      }
+      return meshes;
+    },
+    dispose(meshes) {
+      for (const m of meshes) {
+        scene.remove(m);
+        // Geometry and materials are shared across every cell, so only the
+        // per-instance buffers are released. InstancedMesh.dispose() does exactly
+        // that and leaves the shared geometry alone.
+        m.dispose();
+      }
+    },
+  };
 }
 
 // Global tree scale — trees tower over the grass and bushes; every species'
@@ -147,21 +255,44 @@ const TREE_SCALE = 2;
 // Rejection-sampled placements along the stream distance bands. The forest
 // thickens away from the water, and the opening camera position stays clear
 // so a random tree never spawns right in front of the initial view.
-function placeSpecies({ count, minD, maxD, sRange, fixed = [] }) {
-  // the hand-placed framing trees get the same water test as the scattered ones:
-  // their coordinates were authored against a channel a few units wide, and the
-  // pools have since opened out far enough to swallow some of them
-  const trees = fixed
-    .filter((f) => !inWater(f.x, f.z, 1.2))
-    .map((f) => ({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE }));
-  const camP = streamCurve.getPointAt(0.36);
+//
+// Sampling is per cell and driven by DENSITY rather than by a target count. The
+// field-wide version drew uniformly over 290x290 until it had `count` trees,
+// which cannot be split across cells: each cell would have to know the whole
+// field's tally. Attempts proportional to the cell's area gives the same expected
+// density with no shared state, so a cell's contents depend only on where it is.
+function placeInCell(s, cell) {
+  const { density, minD, maxD, sRange, fixed } = s;
+  const trees = [];
+  const size = cell.size;
+  const x0 = cell.cx - size / 2;
+  const z0 = cell.cz - size / 2;
+
+  // The hand-placed framing trees belong to whichever cell contains them, so they
+  // are placed exactly once however the camera arrives. They keep the same water
+  // test as the scattered ones: their coordinates were authored against a channel
+  // a few units wide, and the pools have since opened out far enough to swallow
+  // some of them.
+  if (fixed) {
+    for (const f of fixed) {
+      if (f.x < x0 || f.x >= x0 + size || f.z < z0 || f.z >= z0 + size) continue;
+      if (inWater(f.x, f.z, 1.2)) continue;
+      trees.push({ x: f.x, z: f.z, rot: Math.random() * Math.PI * 2, s: f.s * TREE_SCALE });
+    }
+  }
+
+  const camP = streamCurve.getPointAt(HOME_T);
   const camX = camP.x - 2, camZ = camP.z + 8;
 
-  let attempts = 0;
-  while (trees.length < count && attempts < count * 40) {
-    attempts++;
-    const x = (Math.random() - 0.5) * 290;
-    const z = (Math.random() - 0.5) * 290;
+  // Fractional attempts must not be truncated — at 0.00094/m² a 100m cell wants
+  // 9.4 attempts, and flooring every cell would lose 4% of the high pines. Carry
+  // the remainder as a probability instead.
+  const want = density * size * size;
+  const attempts = Math.floor(want) + (Math.random() < want % 1 ? 1 : 0);
+
+  for (let a = 0; a < attempts; a++) {
+    const x = x0 + Math.random() * size;
+    const z = z0 + Math.random() * size;
     if ((x - camX) * (x - camX) + (z - camZ) * (z - camZ) < 15 * 15) continue;
     const { d: sd, t } = streamAt(x, z);
     if (sd < minD || sd > maxD) continue;
@@ -217,9 +348,8 @@ function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
 // it saves in geometry. computeBoundingSphere() replaces the old
 // `frustumCulled = false`: instance-aware bounds mean culling is correct, so
 // there's no reason to opt out of it.
-function addTrunks(scene, trees, geo, barkTex) {
-  const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 0.95, metalness: 0 });
-  const mesh = new THREE.InstancedMesh(geo, mat, trees.length);
+function addTrunks(scene, out, trees, s) {
+  const mesh = new THREE.InstancedMesh(s.trunkGeo, s.trunkMat, trees.length);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   const dummy = new THREE.Object3D();
@@ -233,16 +363,20 @@ function addTrunks(scene, trees, geo, barkTex) {
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
   scene.add(mesh);
+  out.push(mesh);
+}
+
+// The dead-stick stub, shared by every high pine.
+function makeStickGeo() {
+  const geo = new THREE.CylinderGeometry(0.015, 0.055, 2.4, 5, 1);
+  geo.translate(0, 1.2, 0);
+  return geo;
 }
 
 // Short dead branch stubs angling down off the bare lower trunks.
-function addDeadSticks(scene, trees, barkTex) {
-  if (trees.length === 0) return;
+function addDeadSticks(scene, out, trees, s) {
   const PER = 7;
-  const geo = new THREE.CylinderGeometry(0.015, 0.055, 2.4, 5, 1);
-  geo.translate(0, 1.2, 0);
-  const mat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1, metalness: 0 });
-  const mesh = new THREE.InstancedMesh(geo, mat, trees.length * PER);
+  const mesh = new THREE.InstancedMesh(s.stickGeo, s.stickMat, trees.length * PER);
   mesh.castShadow = true;
   const dummy = new THREE.Object3D();
   let m = 0;
@@ -263,6 +397,7 @@ function addDeadSticks(scene, trees, barkTex) {
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
   scene.add(mesh);
+  out.push(mesh);
 }
 
 // Crown silhouette: horizontal radius (0-1) at height fraction t, measured from
@@ -322,9 +457,10 @@ function makeCrownGeo(profileName) {
   return g;
 }
 
-// A crown per tree: one instance of one closed shell. Three shape variants per
-// species, dealt out round-robin, so neighbouring trees are not clones.
-function addCanopy(scene, trees, tex, p) {
+// The crown shells and materials for one species, built once and shared by every
+// cell. Three shape variants, dealt out round-robin, so neighbouring trees are
+// not clones.
+function makeCanopyAssets(tex, p) {
   const variants = [makeCrownGeo(p.profile), makeCrownGeo(p.profile), makeCrownGeo(p.profile)];
   // Openwork, so alphaTest + DoubleSide: without the back faces you see straight
   // through the holes to nothing and the crown reads as an empty husk; with them
@@ -358,20 +494,30 @@ function addCanopy(scene, trees, tex, p) {
     alphaTest: 0.12,
   });
 
+  return { crownVariants: variants, canopyMat: mat, canopyDepthMat: depthMat };
+}
+
+// One cell's crowns: one InstancedMesh per shape variant. The old version
+// bucketed instances into a 3x3 grid over the whole field so that a field-wide
+// mesh could still be frustum culled; the cell now IS the cull unit, so the
+// bucketing is gone and each variant is a single mesh per cell.
+function addCanopy(scene, out, trees, s) {
+  const p = s.crown;
+  const variants = s.crownVariants;
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
-  // one bucket set per variant: instances of one InstancedMesh must share geometry
-  const buckets = variants.map(() => new Map());
+  // instances of one InstancedMesh must share geometry, so group by variant
+  const groups = variants.map(() => ({ mats: [], cols: [] }));
 
   trees.forEach((tr, i) => {
-    const bucket = bucketFor(buckets[i % variants.length], tr.x, tr.z);
+    const g = groups[i % variants.length];
     const yBase = terrainHeight(tr.x, tr.z);
     dummy.position.set(tr.x, yBase + p.crownBase * tr.s, tr.z);
     dummy.rotation.set(0, tr.rot + Math.random() * Math.PI * 2, 0);
     const R = p.radius * tr.s * (0.88 + Math.random() * 0.24);
     dummy.scale.set(R, (p.crownTop - p.crownBase) * tr.s * (0.9 + Math.random() * 0.2), R);
     dummy.updateMatrix();
-    bucket.mats.push(dummy.matrix.clone());
+    g.mats.push(dummy.matrix.clone());
     // one tint per tree — a crown has to read as a single object, so the colour
     // variation lives between trees, never within one crown
     // Tint spread stays small in every channel. This multiplies the texture, so
@@ -383,17 +529,25 @@ function addCanopy(scene, trees, tex, p) {
       (p.sat ?? 0.24) + (Math.random() - 0.5) * 0.08,
       p.light + (Math.random() - 0.5) * 0.07
     );
-    bucket.cols.push(col.clone());
+    g.cols.push(col.clone());
   });
 
-  // Chunked for the same reason the branch cards were: one field-wide mesh has
-  // field-wide bounds and can never be frustum culled.
   variants.forEach((geo, i) => {
-    addChunkedInstances(scene, buckets[i], geo, mat, {
-      castShadow: true,
-      receiveShadow: true,
-      depthMat,
-    });
+    const { mats, cols } = groups[i];
+    if (!mats.length) return;
+    const mesh = new THREE.InstancedMesh(geo, s.canopyMat, mats.length);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.customDepthMaterial = s.canopyDepthMat;
+    for (let k = 0; k < mats.length; k++) {
+      mesh.setMatrixAt(k, mats[k]);
+      mesh.setColorAt(k, cols[k]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    scene.add(mesh);
+    out.push(mesh);
   });
 }
 

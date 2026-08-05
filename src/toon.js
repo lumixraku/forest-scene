@@ -22,67 +22,85 @@ import * as THREE from 'three';
 // pass barely showed.
 const LIT = new Set(['MeshStandardMaterial', 'MeshPhysicalMaterial', 'MeshLambertMaterial', 'MeshPhongMaterial']);
 
-export function toonify(scene, opts = {}) {
-  const p = {
-    // Where the terminator sits, in "how sun-dominated is this pixel" terms.
-    // The sky fill is much stronger now than when these were tuned, so `t` runs
-    // lower across the whole frame and the edge has to come down with it or the
-    // lit plateau shrinks to the few surfaces facing the sun dead-on.
-    edge: 0.2,
-    // Wider than a knife edge. A 0.04 terminator on every leaf mass is what tips
-    // the look from painterly into flat cartoon; 0.1 still separates the two
-    // tones but lets the turn read as a form turning.
-    width: 0.1,
-    // Shadow side: cool and clearly readable. It is LIFTED, not darkened — in
-    // this style the dark half of a tree is a mid-blue-green you can still read
-    // every leaf in, which is the opposite of a photographic shadow.
-    // Cool, but not as blue as it was. #9fb8e8 has enough chroma that it turns
-    // brown into violet, and since a trunk's whole value comes from this term
-    // every trunk in the frame read as a cold purple bar. Pulling the chroma
-    // down keeps the crowns' shadow side reading as sky-lit without repainting
-    // the wood.
-    shadow: new THREE.Color('#b4bfdb'),
-    // Lifted from 1.25. A trunk stands inside its own crown's cast shadow, so it
-    // receives no sun at all and its entire value comes from this term — at 1.25
-    // the trunks read as black bars between the crowns.
-    shadowLevel: 1.5,
-    // lit side: warm gold, matching the low sun rather than a white noon one
-    warm: new THREE.Color('#ffe6b8'),
-    litBoost: 1.16,
-    // Rim, warm now instead of cool white. With the sun low and ahead this is
-    // doing backlight — the gold edge on a crown against the sky — so a cool rim
-    // fought the light direction and read as a drawn outline.
-    rim: 0.62,
-    rimPower: 2.4,
-    rimColor: new THREE.Color('#ffdca4'),
-    // 1.42 was pushing the greens to poster paint. The colour now comes from the
-    // warm/cool light split, which does not need help from a saturation boost.
-    sat: 1.15,
-    // Minimum fraction of a surface's own albedo that survives with no light on
-    // it at all. 0 for everything by default — an unlit rock SHOULD go dark. The
-    // canopy overrides it (see below) because leaves are translucent.
-    floor: 0,
-    ...opts,
-  };
+const DEFAULTS = {
+  // Where the terminator sits, in "how sun-dominated is this pixel" terms.
+  // The sky fill is much stronger now than when these were tuned, so `t` runs
+  // lower across the whole frame and the edge has to come down with it or the
+  // lit plateau shrinks to the few surfaces facing the sun dead-on.
+  edge: 0.2,
+  // Wider than a knife edge. A 0.04 terminator on every leaf mass is what tips
+  // the look from painterly into flat cartoon; 0.1 still separates the two
+  // tones but lets the turn read as a form turning.
+  width: 0.1,
+  // Shadow side: cool and clearly readable. It is LIFTED, not darkened — in
+  // this style the dark half of a tree is a mid-blue-green you can still read
+  // every leaf in, which is the opposite of a photographic shadow.
+  // Cool, but not as blue as it was. #9fb8e8 has enough chroma that it turns
+  // brown into violet, and since a trunk's whole value comes from this term
+  // every trunk in the frame read as a cold purple bar. Pulling the chroma
+  // down keeps the crowns' shadow side reading as sky-lit without repainting
+  // the wood.
+  shadow: new THREE.Color('#b4bfdb'),
+  // Lifted from 1.25. A trunk stands inside its own crown's cast shadow, so it
+  // receives no sun at all and its entire value comes from this term — at 1.25
+  // the trunks read as black bars between the crowns.
+  shadowLevel: 1.5,
+  // lit side: warm gold, matching the low sun rather than a white noon one
+  warm: new THREE.Color('#ffe6b8'),
+  litBoost: 1.16,
+  // Rim, warm now instead of cool white. With the sun low and ahead this is
+  // doing backlight — the gold edge on a crown against the sky — so a cool rim
+  // fought the light direction and read as a drawn outline.
+  rim: 0.62,
+  rimPower: 2.4,
+  rimColor: new THREE.Color('#ffdca4'),
+  // 1.42 was pushing the greens to poster paint. The colour now comes from the
+  // warm/cool light split, which does not need help from a saturation boost.
+  sat: 1.15,
+  // Minimum fraction of a surface's own albedo that survives with no light on
+  // it at all. 0 for everything by default — an unlit rock SHOULD go dark. The
+  // canopy overrides it (see below) because leaves are translucent.
+  floor: 0,
+};
 
-  const done = new Set();
+// Every material this module has already patched. Shared by both entry points, so
+// a material handed over early is not patched again when the scene walk reaches
+// it — patching twice would inject the shader chunk twice.
+const done = new Set();
+
+function toonifyOne(mat, p) {
+  if (!mat || done.has(mat) || !LIT.has(mat.type)) return;
+  done.add(mat);
+  // Leaves are translucent: a leaf with the sun behind it glows rather than
+  // going black, and the inner wall of a pierced crown is exactly that case —
+  // it faces away from the key and would otherwise be lit by the sky term
+  // alone. `floor` stands in for the transmission, keeping those surfaces at a
+  // mid tone. Measured effect on the frame's near-black share is small (~0.5
+  // points); it earns its place on the near crowns, where the alternative is
+  // dark pits between the leaf clusters.
+  patch(mat, mat.userData.canopy ? { ...p, shadowLevel: p.shadowLevel * 1.2, floor: 0.34 } : p);
+  // a drawn surface has no glossy roll-off
+  mat.roughness = 1;
+  mat.metalness = 0;
+}
+
+// Cel-shade an explicit list of materials.
+//
+// `toonify(scene)` finds its work by walking the scene, which only sees what has
+// already been added. Streamed layers build their cells later, so their shared
+// materials have to be handed over directly — otherwise they keep the stock
+// Standard shading and read as a flatter, duller surface than everything the
+// startup pass caught, which is glaring when it is the ground the rest sits on.
+export function toonifyMaterials(mats, opts = {}) {
+  const p = { ...DEFAULTS, ...opts };
+  for (const mat of mats) toonifyOne(mat, p);
+}
+
+export function toonify(scene, opts = {}) {
+  const p = { ...DEFAULTS, ...opts };
   scene.traverse((obj) => {
     const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
-    for (const mat of mats) {
-      if (done.has(mat) || !LIT.has(mat.type)) continue;
-      done.add(mat);
-      // Leaves are translucent: a leaf with the sun behind it glows rather than
-      // going black, and the inner wall of a pierced crown is exactly that case —
-      // it faces away from the key and would otherwise be lit by the sky term
-      // alone. `floor` stands in for the transmission, keeping those surfaces at a
-      // mid tone. Measured effect on the frame's near-black share is small (~0.5
-      // points); it earns its place on the near crowns, where the alternative is
-      // dark pits between the leaf clusters.
-      patch(mat, mat.userData.canopy ? { ...p, shadowLevel: p.shadowLevel * 1.2, floor: 0.34 } : p);
-      // a drawn surface has no glossy roll-off
-      mat.roughness = 1;
-      mat.metalness = 0;
-    }
+    for (const mat of mats) toonifyOne(mat, p);
   });
 }
 

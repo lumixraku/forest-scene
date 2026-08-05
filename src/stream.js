@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   streamCurve, levelAt, cascadeAt, halfWidthAt, narrownessAt, DROPS, DROP_LEN,
+  STREAM_LENGTH, tOfArc, tSpan, originalT,
 } from './streamPath.js';
 import { terrainHeight } from './terrain.js';
 import { makeRockTexture, makeFoamStreakTexture, makeBedTexture } from './textures.js';
@@ -71,17 +72,20 @@ export function createStream(scene) {
     rocks.castShadow = true;
     rocks.receiveShadow = true;
     let i = 0;
+    // The drop table is in arc length; the curve is sampled by t.
+    const SILL_JITTER = tSpan(1.3);
     for (const d of DROPS) {
-      const tLip = Math.min(d.t + DROP_LEN * 0.4, 1);
+      const tLip = tOfArc(d.u + DROP_LEN * 0.4);
       const hw = halfWidthAt(tLip);
-      const lipLvl = levelAt(Math.min(d.t + DROP_LEN, 1));
+      const tFoot = tOfArc(d.u + DROP_LEN);
+      const lipLvl = levelAt(tFoot);
       for (let k = 0; k < perDrop; k++) {
         const lat = ((k + 0.5) / perDrop - 0.5) * 2 * (hw * 0.9) + (Math.random() - 0.5) * 1.2;
-        const tt = tLip + (Math.random() - 0.5) * 0.004;
+        const tt = tLip + (Math.random() - 0.5) * SILL_JITTER;
         const { x, z } = lateral(tt, lat);
         const s = 0.9 + Math.random() * 1.1;
         setRock(rocks, i++, x, z, lipLvl - 0.55 + s * 0.28, s);
-        addRing(x, z, Math.min(d.t + DROP_LEN, 1), s * 1.6);
+        addRing(x, z, tFoot, s * 1.6);
       }
     }
     rocks.count = i;
@@ -92,7 +96,10 @@ export function createStream(scene) {
 
   // ---- pebbles on the bed, visible THROUGH the clear water ----
   {
-    const COUNT = 420;
+    // Counts along the brook are authored per unit of length, not as totals: the
+    // authored numbers were chosen against a 326-unit curve, and keeping them
+    // fixed on a 3.2x longer one would thin every bed and bank to a third.
+    const COUNT = perLength(420);
     const pebbles = new THREE.InstancedMesh(variants[2], rockMat, COUNT);
     pebbles.receiveShadow = true;
     for (let i = 0; i < COUNT; i++) {
@@ -113,8 +120,8 @@ export function createStream(scene) {
 
   // ---- bank boulders + loose stones in the water ----
   const sets = [
-    { count: 30, latPad: [0.5, 5], sMin: 0.8, sMax: 2.0, bank: true },
-    { count: 60, latPad: [-1, 1], sMin: 0.3, sMax: 1.0, bank: false },
+    { count: perLength(30), latPad: [0.5, 5], sMin: 0.8, sMax: 2.0, bank: true },
+    { count: perLength(60), latPad: [-1, 1], sMin: 0.3, sMax: 1.0, bank: false },
   ];
   for (const set of sets) {
     const per = Math.ceil(set.count / variants.length);
@@ -144,10 +151,12 @@ export function createStream(scene) {
 
   // ---- hand-placed hero boulders near the start view ----
   {
+    // Placed by eye against the lake in the opening shot, so their parameters are
+    // ported from the original curve rather than reinterpreted on the longer one.
     const hero = [
-      { t: 0.405, lat: -3.5, s: 1.9 }, { t: 0.418, lat: 1.5, s: 1.4 },
-      { t: 0.432, lat: 4.5, s: 2.3 }, { t: 0.445, lat: -1.0, s: 1.1 },
-      { t: 0.458, lat: -5.0, s: 1.6 },
+      { t: originalT(0.405), lat: -3.5, s: 1.9 }, { t: originalT(0.418), lat: 1.5, s: 1.4 },
+      { t: originalT(0.432), lat: 4.5, s: 2.3 }, { t: originalT(0.445), lat: -1.0, s: 1.1 },
+      { t: originalT(0.458), lat: -5.0, s: 1.6 },
     ];
     const rocks = new THREE.InstancedMesh(variants[1], rockMat, hero.length);
     rocks.castShadow = true;
@@ -195,11 +204,25 @@ export function createStream(scene) {
   };
 }
 
+// Lengthwise resolution of both ribbons, in segments per world unit. The water
+// and bed ribbons were authored at 420 segments over the original 326-unit curve,
+// i.e. 1.287/unit, and it is the RATE that matters rather than the total: kept as
+// a fixed 420, a 3.2x longer brook would be sampled 3.2x more coarsely and every
+// cascade lip would lose the crisp fold that makes it read as a step.
+const ORIGINAL_LENGTH = 326.409;
+const LENGTH_RATIO = STREAM_LENGTH / ORIGINAL_LENGTH;
+const SEGS_PER_UNIT = 420 / ORIGINAL_LENGTH;
+const RIBBON_SEGS = Math.round(SEGS_PER_UNIT * STREAM_LENGTH);
+
+// Scale a count that was authored against the original curve so it keeps the same
+// per-unit density on the extended one.
+const perLength = (authored) => Math.round(authored * (STREAM_LENGTH / ORIGINAL_LENGTH));
+
 // Ribbon following the curve in plan AND the terraced profile in elevation.
 // MeshStandardMaterial with injected flow/foam shading: receives shadows,
 // gets sun specular, fogs with the scene.
 function buildWaterRibbon() {
-  const SEGS = 420;
+  const SEGS = RIBBON_SEGS;
   // Cross-channel columns. Two (one per bank) left every quad spanning the full
   // width, and a quad whose four corners carry different depth/width values
   // interpolates differently in each of its two triangles — which creased along
@@ -225,7 +248,13 @@ function buildWaterRibbon() {
       const v = k / COLS;
       const lat = (v * 2 - 1) * w;
       positions.push(p.x + (bx / bl) * lat, y, p.z + (bz / bl) * lat);
-      uvs.push(t, v);
+      // Lengthwise coordinate in ORIGINAL-CURVE UNITS, not raw t. Every frequency
+      // in the water shader (`vUvS.x * 140.0`, the `* 400.0` churn) is a count of
+      // cycles across whatever this spans, so feeding it raw t would stretch every
+      // ripple by the same 3.2x the curve grew — the surface stops reading as
+      // moving water and turns into slow rolling bands. Scaling here keeps all of
+      // those authored numbers meaning what they meant.
+      uvs.push(t * LENGTH_RATIO, v);
       foamAttr.push(c);
       // local half-width, so the shader can size ripples and the shore foam
       // band in world units rather than across the normalized uv — the channel
@@ -400,7 +429,7 @@ function buildWaterRibbon() {
 // Sandy pebble bed carved below the waterline — the clear water reads as
 // water precisely because this is visible through it.
 function buildBedRibbon() {
-  const SEGS = 420;
+  const SEGS = RIBBON_SEGS;
   const STEPS = 6;
   const positions = [];
   const uvs = [];
@@ -419,7 +448,9 @@ function buildBedRibbon() {
       const lat = (v * 2 - 1) * hw;
       const cross = Math.abs(v * 2 - 1);
       positions.push(p.x + (bx / bl) * lat, lvl - bedDepth(cross), p.z + (bz / bl) * lat);
-      uvs.push(t * 90, v * 3);
+      // 90 repeats of the pebble texture were tuned against the original curve, so
+      // the count has to grow with the length or the gravel stretches 3.2x.
+      uvs.push(t * 90 * LENGTH_RATIO, v * 3);
       // slightly dimmer toward the deep centre line
       const shade = 1.0 - (1 - cross) * 0.3;
       colors.push(shade, shade, shade);
