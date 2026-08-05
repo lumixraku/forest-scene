@@ -9,12 +9,65 @@ import {
   makeFlowerBushTexture, makeSedgeTexture, makeLeafFillTexture,
 } from './textures.js';
 import { makeBlobGeo } from './trees.js';
+import { CHUNK, chunkCentre } from './grid.js';
+
+// Every canvas texture and card geometry the understory uses, drawn ONCE and
+// shared by all chunks.
+//
+// These were being rebuilt inside createFoliage, so each chunk redrew eight
+// procedural canvases and re-merged their card geometry from scratch — 10.5
+// seconds of synchronous work per chunk, measured. It was by far the most
+// expensive step in the scene, and every millisecond of it was spent recomputing
+// pixel-identical results, because none of it depends on which chunk is being
+// built. trees.js already shares its bark and canopy sheets exactly this way.
+let sharedFoliage = null;
+function foliageAssets() {
+  if (sharedFoliage) return sharedFoliage;
+  sharedFoliage = {
+    // bank garden: three flower-bush colourways plus waterline sedge
+    bankSpecies: [
+      { tex: makeFlowerBushTexture('#d13d9e'), geo: bushCards(), s: [0.4, 0.75], bush: true },
+      { tex: makeFlowerBushTexture('#8a5ad2'), geo: bushCards(), s: [0.38, 0.7], bush: true },
+      { tex: makeFlowerBushTexture('#e0669c'), geo: bushCards(), s: [0.35, 0.65], bush: true },
+      { tex: makeSedgeTexture(), geo: crossCards(2.0, 1.6), s: [0.8, 1.6], bush: false },
+    ],
+    spikeTex: [
+      makeFlowerSpikeTexture('#7a4fae', '#cf95e0'), // purple
+      makeFlowerSpikeTexture('#b45a92', '#f0b6d4'), // pink
+    ],
+    spikeGeo: crossCards(1.0, 2.2),
+    meadowTex: makeMeadowFlowerTexture(),
+    meadowGeo: crossCards(0.9, 0.9, 0.45),
+    leafTex: makeLeafFillTexture(['#6d8a33', '#93ad45', '#b7c95e']),
+    scatterFlowerTex: makeMeadowFlowerTexture(),
+    scatterFlowerGeo: crossCards(0.55, 0.55),
+  };
+  // Mark every shared geometry so a chunk unloading cannot dispose it out from
+  // under the chunks still drawing it. See disposeGroup in grid.js.
+  for (const g of [
+    sharedFoliage.spikeGeo, sharedFoliage.meadowGeo, sharedFoliage.scatterFlowerGeo,
+    ...sharedFoliage.bankSpecies.map((s) => s.geo),
+  ]) g.userData.shared = true;
+  return sharedFoliage;
+}
 
 // Undergrowth accents: lupine-like flower spikes clustered on the banks,
 // small yellow/white meadow flowers sprinkled through the grass, and leafy
 // card bushes filling the gaps between trunks.
-export function createFoliage(scene) {
+// One chunk's understory, returned as a Group the manager can dispose.
+// Everything is placed in world space inside this chunk's bounds; the bank
+// plants follow the stream wherever it passes through the chunk, so a chunk the
+// brook misses simply gets no bank garden.
+export function createFoliage(scene, cx = 0, cz = 0) {
+  const A = foliageAssets();
   const dummy = new THREE.Object3D();
+  const group = new THREE.Group();
+  const origin = chunkCentre(cx, cz);
+  const FIELD = CHUNK - 10;
+  // Bank plants are placed by walking the stream curve, which now spans all nine
+  // chunks — so a chunk must only keep the ones that land inside its own bounds,
+  // or every chunk would grow the whole valley's bank garden.
+  const mine = (x, z) => Math.abs(x - origin.x) <= FIELD / 2 && Math.abs(z - origin.z) <= FIELD / 2;
 
   // Walk outward from the channel until we hit dry land — the terrain is
   // carved below the waterline near the stream, so the true shoreline can't
@@ -40,15 +93,14 @@ export function createFoliage(scene) {
   // --- bank garden: patches of flower bushes and sedge along the waterline,
   // clustered by species so the banks read as arranged drifts, not confetti ---
   {
-    const species = [
-      { tex: makeFlowerBushTexture('#d13d9e'), geo: bushCards(), s: [0.4, 0.75], bush: true },
-      { tex: makeFlowerBushTexture('#8a5ad2'), geo: bushCards(), s: [0.38, 0.7], bush: true },
-      { tex: makeFlowerBushTexture('#e0669c'), geo: bushCards(), s: [0.35, 0.65], bush: true },
-      { tex: makeSedgeTexture(), geo: crossCards(2.0, 1.6), s: [0.8, 1.6], bush: false },
-    ];
+    const species = A.bankSpecies;
     const placements = species.map(() => []);
 
-    const CLUSTERS = 64;
+    // The curve spans all nine chunks now, so sampling t uniformly over 0..1
+    // would scatter 8/9 of the clusters into other chunks and leave this one
+    // nearly bare. Walking the whole curve and keeping only the hits inside this
+    // chunk gives each chunk the same bank density the single-chunk scene had.
+    const CLUSTERS = 64 * 9;
     for (let c = 0; c < CLUSTERS; c++) {
       const t = Math.random();
       const side = Math.random() < 0.5 ? 1 : -1;
@@ -56,6 +108,7 @@ export function createFoliage(scene) {
       const si = Math.random() < 0.45 ? 3 : (Math.random() * 3) | 0;
       const centre = bankPoint(t, side, si === 3 ? Math.random() * 0.8 : 0.6 + Math.random() * 2.2);
       if (!centre) continue;
+      if (!mine(centre.x, centre.z)) continue;
       const n = 2 + ((Math.random() * 3) | 0);
       for (let k = 0; k < n; k++) {
         const x = centre.x + (Math.random() - 0.5) * 3.2;
@@ -97,17 +150,13 @@ export function createFoliage(scene) {
         mesh.setMatrixAt(i, dummy.matrix);
       });
       mesh.instanceMatrix.needsUpdate = true;
-      scene.add(mesh);
+      group.add(mesh);
     });
   }
 
   // --- lupine spikes (crossed alpha cards) clustered along both banks ---
-  const spikeVariants = [
-    makeFlowerSpikeTexture('#7a4fae', '#cf95e0'), // purple
-    makeFlowerSpikeTexture('#b45a92', '#f0b6d4'), // pink
-  ];
-  for (const tex of spikeVariants) {
-    const geo = crossCards(1.0, 2.2);
+  for (const tex of A.spikeTex) {
+    const geo = A.spikeGeo;
     const mat = new THREE.MeshStandardMaterial({
       map: tex,
       alphaTest: 0.4,
@@ -118,8 +167,10 @@ export function createFoliage(scene) {
     keepAuthoredNormals(mat);
 
     const positions = [];
-    // seed cluster spots on the banks, then sprinkle spikes around each
-    for (let c = 0; c < 20 && positions.length < 320; c++) {
+    // Seed cluster spots on the banks, then sprinkle spikes around each. Same
+    // whole-curve walk as the bank garden above, keeping only what lands in this
+    // chunk — and 9x the seed attempts to compensate.
+    for (let c = 0; c < 20 * 9 && positions.length < 320; c++) {
       const t = Math.random();
       const p = streamCurve.getPointAt(t);
       const tan = streamCurve.getTangentAt(t);
@@ -127,12 +178,14 @@ export function createFoliage(scene) {
       const bl = Math.hypot(bx, bz) || 1;
       const side = Math.random() < 0.5 ? 1 : -1;
       const off = halfWidthAt(t) + 2 + Math.random() * 6.5;
-      const cx = p.x + (bx / bl) * off * side;
-      const cz = p.z + (bz / bl) * off * side;
+      // deliberately not named cx/cz — those are the chunk coordinates
+      const sx = p.x + (bx / bl) * off * side;
+      const sz = p.z + (bz / bl) * off * side;
+      if (!mine(sx, sz)) continue;
       const n = 6 + ((Math.random() * 10) | 0);
       for (let k = 0; k < n && positions.length < 320; k++) {
-        const x = cx + (Math.random() - 0.5) * 7;
-        const z = cz + (Math.random() - 0.5) * 7;
+        const x = sx + (Math.random() - 0.5) * 7;
+        const z = sz + (Math.random() - 0.5) * 7;
         const h = terrainHeight(x, z);
         if (h < levelAt(streamAt(x, z).t) + 0.4) continue;
         if (inWater(x, z, 0.3)) continue;
@@ -151,13 +204,13 @@ export function createFoliage(scene) {
       mesh.setMatrixAt(i, dummy.matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-    scene.add(mesh);
+    group.add(mesh);
   }
 
   // --- small meadow flowers scattered through the grass ---
   {
-    const tex = makeMeadowFlowerTexture();
-    const geo = crossCards(0.9, 0.9, 0.45);
+    const tex = A.meadowTex;
+    const geo = A.meadowGeo;
     const mat = new THREE.MeshStandardMaterial({
       map: tex,
       alphaTest: 0.4,
@@ -172,8 +225,8 @@ export function createFoliage(scene) {
     let placed = 0, attempts = 0;
     while (placed < COUNT && attempts < COUNT * 12) {
       attempts++;
-      const x = (Math.random() - 0.5) * 240;
-      const z = (Math.random() - 0.5) * 240;
+      const x = origin.x + (Math.random() - 0.5) * (FIELD - 50);
+      const z = origin.z + (Math.random() - 0.5) * (FIELD - 50);
       const { d: sd, t } = streamAt(x, z);
       if (Math.random() > THREE.MathUtils.clamp(1.5 - sd / 55, 0.05, 1)) continue;
       const h = terrainHeight(x, z);
@@ -188,7 +241,7 @@ export function createFoliage(scene) {
     }
     mesh.count = placed;
     mesh.instanceMatrix.needsUpdate = true;
-    scene.add(mesh);
+    group.add(mesh);
   }
 
   // --- fluffy grass-ball bushes between the trunks, built the same way as
@@ -200,8 +253,8 @@ export function createFoliage(scene) {
     let attempts = 0;
     while (spots.length < COUNT && attempts < COUNT * 30) {
       attempts++;
-      const x = (Math.random() - 0.5) * 270;
-      const z = (Math.random() - 0.5) * 270;
+      const x = origin.x + (Math.random() - 0.5) * (FIELD - 20);
+      const z = origin.z + (Math.random() - 0.5) * (FIELD - 20);
       const { d: sd, t } = streamAt(x, z);
       if (sd > 90) continue;
       const h = terrainHeight(x, z);
@@ -211,7 +264,7 @@ export function createFoliage(scene) {
     }
 
     // leaf blobs — fresh yellow-greens so the clump reads as lush grass
-    const leafTex = makeLeafFillTexture(['#6d8a33', '#93ad45', '#b7c95e']);
+    const leafTex = A.leafTex;
     const blobMat = new THREE.MeshStandardMaterial({
       map: leafTex,
       alphaTest: 0.28,
@@ -253,7 +306,7 @@ export function createFoliage(scene) {
         bucket.cols.push(col.clone());
       }
     }
-    addChunkedInstances(scene, blobBuckets, blobGeo, blobMat, {
+    addChunkedInstances(group, blobBuckets, blobGeo, blobMat, {
       castShadow: true,
       receiveShadow: true,
       depthMat: blobDepthMat,
@@ -261,7 +314,7 @@ export function createFoliage(scene) {
 
     // meadow flowers nestled into the top of each clump
     const flowerMat = new THREE.MeshStandardMaterial({
-      map: makeMeadowFlowerTexture(),
+      map: A.scatterFlowerTex,
       alphaTest: 0.4,
       side: THREE.DoubleSide,
       roughness: 0.9,
@@ -269,7 +322,7 @@ export function createFoliage(scene) {
     applyWind(flowerMat, { strength: 0.15, freq: 2.0, heightFactor: 0.6 });
     keepAuthoredNormals(flowerMat);
     const FLOWERS = 4;
-    const flowers = new THREE.InstancedMesh(crossCards(0.55, 0.55), flowerMat, spots.length * FLOWERS);
+    const flowers = new THREE.InstancedMesh(A.scatterFlowerGeo, flowerMat, spots.length * FLOWERS);
     flowers.receiveShadow = true;
     let fi = 0;
     for (const f of spots) {
@@ -289,8 +342,11 @@ export function createFoliage(scene) {
       }
     }
     flowers.instanceMatrix.needsUpdate = true;
-    scene.add(flowers);
+    group.add(flowers);
   }
+
+  scene.add(group);
+  return group;
 }
 
 // Two (or three) intersecting vertical quads, pivot at the bottom.

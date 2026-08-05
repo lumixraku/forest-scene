@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import {
-  streamCurve, levelAt, cascadeAt, halfWidthAt, narrownessAt, DROPS, DROP_LEN,
+  streamCurve, levelAt, cascadeAt, halfWidthAt, narrownessAt, DROPS, DROP_LEN, midT,
 } from './streamPath.js';
 import { terrainHeight } from './terrain.js';
 import { makeRockTexture, makeFoamStreakTexture, makeBedTexture } from './textures.js';
+import { CHUNK, chunkCentre } from './grid.js';
 
 // Terraced brook. The water ribbon follows the stepped elevation profile and
 // uses a MeshStandardMaterial with injected flow/foam shading, so it sits in
@@ -17,12 +18,57 @@ function bedDepth(cross) {
   return 0.4 + 1.1 * (1 - cross * cross);
 }
 
-export function createStream(scene) {
+// One chunk's worth of brook. The water/bed ribbons are built only for the
+// stretch of curve that crosses this chunk, and the rocks are walked over the
+// whole curve but kept only where they land inside it — the same
+// whole-curve-then-filter shape the bank foliage uses, and for the same reason:
+// t is a global parameter, so sampling it uniformly would scatter 8/9 of
+// everything into the neighbours.
+export function createStream(scene, cx = 0, cz = 0) {
   const group = new THREE.Group();
+  const origin = chunkCentre(cx, cz);
+  const FIELD = CHUNK;
+  // A little tolerance past the chunk edge: a boulder centred just outside still
+  // has half its body inside, and dropping it would leave a visible notch in the
+  // bank exactly on the boundary.
+  const PAD = 6;
+  const mine = (x, z) =>
+    Math.abs(x - origin.x) <= FIELD / 2 + PAD && Math.abs(z - origin.z) <= FIELD / 2 + PAD;
 
-  group.add(buildBedRibbon());
+  // The span of curve parameter that crosses this chunk. Scanned coarsely, then
+  // widened by one step on each side so neighbouring chunks' ribbons overlap
+  // slightly rather than leaving a gap at the boundary — the ribbon is a strip of
+  // quads, and two strips that merely touch still show a hairline of ground
+  // between them once the surface is displaced.
+  const tSpan = (() => {
+    const STEPS = 1200;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i <= STEPS; i++) {
+      const t = i / STEPS;
+      const p = streamCurve.getPointAt(t);
+      // generous margin: the ribbon is up to ~22 units to either side of the
+      // centreline, so a chunk can contain water whose centreline is outside it
+      if (Math.abs(p.x - origin.x) <= FIELD / 2 + 30 && Math.abs(p.z - origin.z) <= FIELD / 2 + 30) {
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
+      }
+    }
+    if (lo > hi) return null; // the brook never enters this chunk
+    const pad = 2 / STEPS;
+    return [Math.max(0, lo - pad), Math.min(1, hi + pad)];
+  })();
 
-  const water = buildWaterRibbon();
+  // A chunk the brook misses gets no water at all — no ribbons, no rocks, no
+  // foam. Returning early keeps those chunks cheap.
+  if (!tSpan) {
+    scene.add(group);
+    return { group, update() {} };
+  }
+
+  group.add(buildBedRibbon(tSpan));
+
+  const water = buildWaterRibbon(tSpan);
   group.add(water.mesh);
 
   const rockTex = makeRockTexture();
@@ -72,14 +118,26 @@ export function createStream(scene) {
     rocks.receiveShadow = true;
     let i = 0;
     for (const d of DROPS) {
-      const tLip = Math.min(d.t + DROP_LEN * 0.4, 1);
+      const tLip = d.t + DROP_LEN * 0.4;
+      // DROPS covers two repetitions past each end of the curve so the terrace
+      // cadence never runs out (see streamPath). levelAt simply ignores those
+      // out-of-range steps, but a sill is real geometry and has to be sampled off
+      // the curve, where getPointAt returns undefined outside 0..1. Skipping
+      // depends only on d.t, so every chunk skips the same drops and the random
+      // draws below stay aligned across chunks.
+      if (tLip <= 0 || tLip >= 1) continue;
       const hw = halfWidthAt(tLip);
       const lipLvl = levelAt(Math.min(d.t + DROP_LEN, 1));
       for (let k = 0; k < perDrop; k++) {
         const lat = ((k + 0.5) / perDrop - 0.5) * 2 * (hw * 0.9) + (Math.random() - 0.5) * 1.2;
-        const tt = tLip + (Math.random() - 0.5) * 0.004;
+        const tt = THREE.MathUtils.clamp(tLip + (Math.random() - 0.5) * 0.004, 0, 1);
         const { x, z } = lateral(tt, lat);
         const s = 0.9 + Math.random() * 1.1;
+        // Every chunk walks every drop so the random draws stay aligned, but only
+        // keeps the stones that stand in its own ground. Skipping the draw for
+        // foreign drops instead would make a chunk's stones depend on which drops
+        // came before it.
+        if (!mine(x, z)) continue;
         setRock(rocks, i++, x, z, lipLvl - 0.55 + s * 0.28, s);
         addRing(x, z, Math.min(d.t + DROP_LEN, 1), s * 1.6);
       }
@@ -92,9 +150,13 @@ export function createStream(scene) {
 
   // ---- pebbles on the bed, visible THROUGH the clear water ----
   {
-    const COUNT = 420;
+    // 420 pebbles covered one chunk's worth of brook; sampling t over the whole
+    // 3x3 curve means only ~1/3 of the draws land in any given chunk, so the
+    // attempt count goes up to keep the bed as gravelled as it was.
+    const COUNT = 420 * 3;
     const pebbles = new THREE.InstancedMesh(variants[2], rockMat, COUNT);
     pebbles.receiveShadow = true;
+    let pn = 0;
     for (let i = 0; i < COUNT; i++) {
       const tt = Math.random();
       const hw = halfWidthAt(tt);
@@ -104,8 +166,10 @@ export function createStream(scene) {
       // sit on the sandy bed ribbon so they show through the clear water
       const cross = Math.abs(lat) / (hw + 1.2);
       const y = levelAt(tt) - bedDepth(cross) + s * 0.35;
-      setRock(pebbles, i, x, z, y, s);
+      if (!mine(x, z)) continue;
+      setRock(pebbles, pn++, x, z, y, s);
     }
+    pebbles.count = pn;
     pebbles.instanceMatrix.needsUpdate = true;
     if (pebbles.instanceColor) pebbles.instanceColor.needsUpdate = true;
     group.add(pebbles);
@@ -117,11 +181,12 @@ export function createStream(scene) {
     { count: 60, latPad: [-1, 1], sMin: 0.3, sMax: 1.0, bank: false },
   ];
   for (const set of sets) {
-    const per = Math.ceil(set.count / variants.length);
+    const per = Math.ceil((set.count * 3) / variants.length);
     for (const geo of variants) {
       const rocks = new THREE.InstancedMesh(geo, rockMat, per);
       rocks.castShadow = true;
       rocks.receiveShadow = true;
+      let rn = 0;
       for (let i = 0; i < per; i++) {
         const tt = Math.random();
         const hw = halfWidthAt(tt);
@@ -132,10 +197,12 @@ export function createStream(scene) {
         const s = set.sMin + Math.random() * (set.sMax - set.sMin);
         const lvl = levelAt(tt);
         const y = Math.max(terrainHeight(x, z), lvl - 0.9) + s * 0.18;
-        setRock(rocks, i, x, z, y, s);
+        if (!mine(x, z)) continue;
+        setRock(rocks, rn++, x, z, y, s);
         // collar only where the rock actually pokes through the surface
         if (!set.bank && y + s * 0.5 > lvl && y - s * 0.5 < lvl) addRing(x, z, tt, s * 2.0);
       }
+      rocks.count = rn;
       rocks.instanceMatrix.needsUpdate = true;
       if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
       group.add(rocks);
@@ -143,20 +210,25 @@ export function createStream(scene) {
   }
 
   // ---- hand-placed hero boulders near the start view ----
+  // Authored in the original scene's parameter space to frame the opening shot,
+  // so they are mapped through midT and belong to the middle chunk alone.
   {
     const hero = [
-      { t: 0.405, lat: -3.5, s: 1.9 }, { t: 0.418, lat: 1.5, s: 1.4 },
-      { t: 0.432, lat: 4.5, s: 2.3 }, { t: 0.445, lat: -1.0, s: 1.1 },
-      { t: 0.458, lat: -5.0, s: 1.6 },
+      { t: midT(0.405), lat: -3.5, s: 1.9 }, { t: midT(0.418), lat: 1.5, s: 1.4 },
+      { t: midT(0.432), lat: 4.5, s: 2.3 }, { t: midT(0.445), lat: -1.0, s: 1.1 },
+      { t: midT(0.458), lat: -5.0, s: 1.6 },
     ];
     const rocks = new THREE.InstancedMesh(variants[1], rockMat, hero.length);
     rocks.castShadow = true;
     rocks.receiveShadow = true;
-    hero.forEach((hr, i) => {
+    let hn = 0;
+    hero.forEach((hr) => {
       const { x, z } = lateral(hr.t, hr.lat);
-      setRock(rocks, i, x, z, levelAt(hr.t) - 0.7 + hr.s * 0.35, hr.s);
+      if (!mine(x, z)) return;
+      setRock(rocks, hn++, x, z, levelAt(hr.t) - 0.7 + hr.s * 0.35, hr.s);
       addRing(x, z, hr.t, hr.s * 1.9);
     });
+    rocks.count = hn;
     rocks.instanceMatrix.needsUpdate = true;
     if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
     group.add(rocks);
@@ -187,6 +259,7 @@ export function createStream(scene) {
     group.add(wakes);
   }
 
+  scene.add(group);
   return {
     group,
     update(dt) {
@@ -198,8 +271,12 @@ export function createStream(scene) {
 // Ribbon following the curve in plan AND the terraced profile in elevation.
 // MeshStandardMaterial with injected flow/foam shading: receives shadows,
 // gets sun specular, fogs with the scene.
-function buildWaterRibbon() {
-  const SEGS = 420;
+function buildWaterRibbon([t0, t1]) {
+  // 420 segments spanned the whole 300-unit scene; the curve is now ~3x longer,
+  // so holding the same along-stream vertex pitch means scaling the count by the
+  // fraction of curve this chunk actually covers. A fixed 420 over a third of the
+  // curve would have tripled the density for no visible gain.
+  const SEGS = Math.max(24, Math.round(420 * 3 * (t1 - t0)));
   // Cross-channel columns. Two (one per bank) left every quad spanning the full
   // width, and a quad whose four corners carry different depth/width values
   // interpolates differently in each of its two triangles — which creased along
@@ -213,7 +290,7 @@ function buildWaterRibbon() {
   const widthAttr = [];
   const index = [];
   for (let i = 0; i <= SEGS; i++) {
-    const t = i / SEGS;
+    const t = t0 + (t1 - t0) * (i / SEGS);
     const p = streamCurve.getPointAt(t);
     const tan = streamCurve.getTangentAt(t);
     const bx = -tan.z, bz = tan.x;
@@ -399,15 +476,16 @@ function buildWaterRibbon() {
 
 // Sandy pebble bed carved below the waterline — the clear water reads as
 // water precisely because this is visible through it.
-function buildBedRibbon() {
-  const SEGS = 420;
+function buildBedRibbon([t0, t1]) {
+  // same along-stream pitch as before, over just this chunk's stretch
+  const SEGS = Math.max(24, Math.round(420 * 3 * (t1 - t0)));
   const STEPS = 6;
   const positions = [];
   const uvs = [];
   const colors = [];
   const index = [];
   for (let i = 0; i <= SEGS; i++) {
-    const t = i / SEGS;
+    const t = t0 + (t1 - t0) * (i / SEGS);
     const p = streamCurve.getPointAt(t);
     const tan = streamCurve.getTangentAt(t);
     const bx = -tan.z, bz = tan.x;

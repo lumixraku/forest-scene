@@ -2,29 +2,18 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
 import { createWorld } from './world.js';
-import { createGround } from './ground.js';
-import { createGrass } from './grass.js';
-import { createTrees } from './trees.js';
-import { createFoliage } from './foliage.js';
 import { createParticles } from './particles.js';
-import { createStream } from './stream.js';
 import { createComposer } from './postprocess.js';
 import { toonify } from './toon.js';
 import { updateWind } from './wind.js';
-import { streamCurve, levelAt } from './streamPath.js';
+import { streamCurve, levelAt, midT } from './streamPath.js';
+import { createChunkManager } from './chunkManager.js';
 
-// Deterministic randomness so the forest layout is identical on every load
-// (makes the scene stable and tunable instead of reshuffling each reload).
-(() => {
-  let s = 20250614;
-  Math.random = () => {
-    s |= 0;
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-})();
+// Randomness is seeded PER CHUNK rather than globally — see grid.js. The global
+// override that used to live here made the layout reproducible only because the
+// build ran in one fixed order at startup; chunks now stream in and out in an
+// order that depends on where the camera goes, so a single global sequence would
+// give the same patch of ground different contents on each visit.
 
 // ---- renderer ----
 // MSAA is inert here: EffectComposer renders the scene into its own render
@@ -59,38 +48,36 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 1200);
 // above a lower pool looking slightly down the terraced cascade, so the
 // green pools show between the white steps (like the reference footage)
-const camP = streamCurve.getPointAt(0.36);
-const lookP = streamCurve.getPointAt(0.58);
-const LOOK = new THREE.Vector3(lookP.x, levelAt(0.58) + 0.5, lookP.z);
-camera.position.set(camP.x - 2, levelAt(0.36) + 7.0, camP.z + 8);
+// The opening framing was authored against the original 300-unit scene, whose
+// stream parameters now live in the middle third of a much longer curve — hence
+// midT. Without it the camera would start a third of the way up the valley,
+// looking at a stretch of brook it was never composed for.
+const CAM_T = midT(0.36);
+const LOOK_T = midT(0.58);
+const camP = streamCurve.getPointAt(CAM_T);
+const lookP = streamCurve.getPointAt(LOOK_T);
+const LOOK = new THREE.Vector3(lookP.x, levelAt(LOOK_T) + 0.5, lookP.z);
+camera.position.set(camP.x - 2, levelAt(CAM_T) + 7.0, camP.z + 8);
 camera.lookAt(LOOK);
 
 // ---- world (fog / lights / sky) ----
 const world = createWorld(scene);
 
-// ---- valley ground + instanced grass ----
-scene.add(createGround());
-const grass = createGrass(scene);
-
-// ---- forest ----
-createTrees(scene);
-
-// ---- flowers + bushes ----
-createFoliage(scene);
-
-// ---- water + foam + boulders ----
-const stream = createStream(scene);
-scene.add(stream.group);
-
 // ---- dust + birds ----
 const particles = createParticles(scene, new THREE.Vector2(0, -16));
 
-// ---- cel shading ----
-// Must run after every scene module, since it patches the materials they built.
-// This is where the crowns get their volume: the solid canopy texture is nearly
-// one flat tone on purpose, and the warm-lit / cool-shadow split with a hard
-// terminator is what turns each shell back into a readable form.
-toonify(scene);
+// ---- streamed world: ground, grass, forest, understory, water, per chunk ----
+// Each chunk runs toonify over its own new meshes as it lands, and asks for one
+// shadow-map refresh. toonify keeps a module-level record of what it has already
+// patched, so the shared materials are only ever compiled once.
+const chunks = createChunkManager(scene, camera, (built) => {
+  // Patch only what just landed. toonify keeps a module-level record of the
+  // materials it has already compiled, so this is about the traversal: walking the
+  // whole scene on every step re-visits everything already built and gets more
+  // expensive the more of the field exists.
+  if (built) toonify(built);
+  renderer.shadowMap.needsUpdate = true;
+});
 
 // ---- controls: free exploration ----
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -145,10 +132,15 @@ function animate() {
   const t = clock.elapsedTime;
   move(dt);
   updateWind(t);
-  stream.update(dt);
   particles.update(dt, t);
   controls.update();
-  grass.update(camera);
+  // Loads/unloads chunks, spends its frame budget building, and drives the water
+  // and grass-density updates for whatever is currently resident.
+  chunks.update(dt);
+  // Shadow box and sky dome ride along with the camera; a move that crosses a
+  // snap boundary needs one shadow-map re-render.
+  if (world.follow(camera)) renderer.shadowMap.needsUpdate = true;
+  world.sky.position.set(camera.position.x, 0, camera.position.z);
   composer.render();
   requestAnimationFrame(animate);
 }
