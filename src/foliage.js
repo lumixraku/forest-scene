@@ -11,6 +11,46 @@ import {
 import { makeBlobGeo } from './trees.js';
 import { CHUNK, chunkCentre } from './grid.js';
 
+// Every canvas texture and card geometry the understory uses, drawn ONCE and
+// shared by all chunks.
+//
+// These were being rebuilt inside createFoliage, so each chunk redrew eight
+// procedural canvases and re-merged their card geometry from scratch — 10.5
+// seconds of synchronous work per chunk, measured. It was by far the most
+// expensive step in the scene, and every millisecond of it was spent recomputing
+// pixel-identical results, because none of it depends on which chunk is being
+// built. trees.js already shares its bark and canopy sheets exactly this way.
+let sharedFoliage = null;
+function foliageAssets() {
+  if (sharedFoliage) return sharedFoliage;
+  sharedFoliage = {
+    // bank garden: three flower-bush colourways plus waterline sedge
+    bankSpecies: [
+      { tex: makeFlowerBushTexture('#d13d9e'), geo: bushCards(), s: [0.4, 0.75], bush: true },
+      { tex: makeFlowerBushTexture('#8a5ad2'), geo: bushCards(), s: [0.38, 0.7], bush: true },
+      { tex: makeFlowerBushTexture('#e0669c'), geo: bushCards(), s: [0.35, 0.65], bush: true },
+      { tex: makeSedgeTexture(), geo: crossCards(2.0, 1.6), s: [0.8, 1.6], bush: false },
+    ],
+    spikeTex: [
+      makeFlowerSpikeTexture('#7a4fae', '#cf95e0'), // purple
+      makeFlowerSpikeTexture('#b45a92', '#f0b6d4'), // pink
+    ],
+    spikeGeo: crossCards(1.0, 2.2),
+    meadowTex: makeMeadowFlowerTexture(),
+    meadowGeo: crossCards(0.9, 0.9, 0.45),
+    leafTex: makeLeafFillTexture(['#6d8a33', '#93ad45', '#b7c95e']),
+    scatterFlowerTex: makeMeadowFlowerTexture(),
+    scatterFlowerGeo: crossCards(0.55, 0.55),
+  };
+  // Mark every shared geometry so a chunk unloading cannot dispose it out from
+  // under the chunks still drawing it. See disposeGroup in grid.js.
+  for (const g of [
+    sharedFoliage.spikeGeo, sharedFoliage.meadowGeo, sharedFoliage.scatterFlowerGeo,
+    ...sharedFoliage.bankSpecies.map((s) => s.geo),
+  ]) g.userData.shared = true;
+  return sharedFoliage;
+}
+
 // Undergrowth accents: lupine-like flower spikes clustered on the banks,
 // small yellow/white meadow flowers sprinkled through the grass, and leafy
 // card bushes filling the gaps between trunks.
@@ -19,6 +59,7 @@ import { CHUNK, chunkCentre } from './grid.js';
 // plants follow the stream wherever it passes through the chunk, so a chunk the
 // brook misses simply gets no bank garden.
 export function createFoliage(scene, cx = 0, cz = 0) {
+  const A = foliageAssets();
   const dummy = new THREE.Object3D();
   const group = new THREE.Group();
   const origin = chunkCentre(cx, cz);
@@ -52,12 +93,7 @@ export function createFoliage(scene, cx = 0, cz = 0) {
   // --- bank garden: patches of flower bushes and sedge along the waterline,
   // clustered by species so the banks read as arranged drifts, not confetti ---
   {
-    const species = [
-      { tex: makeFlowerBushTexture('#d13d9e'), geo: bushCards(), s: [0.4, 0.75], bush: true },
-      { tex: makeFlowerBushTexture('#8a5ad2'), geo: bushCards(), s: [0.38, 0.7], bush: true },
-      { tex: makeFlowerBushTexture('#e0669c'), geo: bushCards(), s: [0.35, 0.65], bush: true },
-      { tex: makeSedgeTexture(), geo: crossCards(2.0, 1.6), s: [0.8, 1.6], bush: false },
-    ];
+    const species = A.bankSpecies;
     const placements = species.map(() => []);
 
     // The curve spans all nine chunks now, so sampling t uniformly over 0..1
@@ -119,12 +155,8 @@ export function createFoliage(scene, cx = 0, cz = 0) {
   }
 
   // --- lupine spikes (crossed alpha cards) clustered along both banks ---
-  const spikeVariants = [
-    makeFlowerSpikeTexture('#7a4fae', '#cf95e0'), // purple
-    makeFlowerSpikeTexture('#b45a92', '#f0b6d4'), // pink
-  ];
-  for (const tex of spikeVariants) {
-    const geo = crossCards(1.0, 2.2);
+  for (const tex of A.spikeTex) {
+    const geo = A.spikeGeo;
     const mat = new THREE.MeshStandardMaterial({
       map: tex,
       alphaTest: 0.4,
@@ -177,8 +209,8 @@ export function createFoliage(scene, cx = 0, cz = 0) {
 
   // --- small meadow flowers scattered through the grass ---
   {
-    const tex = makeMeadowFlowerTexture();
-    const geo = crossCards(0.9, 0.9, 0.45);
+    const tex = A.meadowTex;
+    const geo = A.meadowGeo;
     const mat = new THREE.MeshStandardMaterial({
       map: tex,
       alphaTest: 0.4,
@@ -232,7 +264,7 @@ export function createFoliage(scene, cx = 0, cz = 0) {
     }
 
     // leaf blobs — fresh yellow-greens so the clump reads as lush grass
-    const leafTex = makeLeafFillTexture(['#6d8a33', '#93ad45', '#b7c95e']);
+    const leafTex = A.leafTex;
     const blobMat = new THREE.MeshStandardMaterial({
       map: leafTex,
       alphaTest: 0.28,
@@ -282,7 +314,7 @@ export function createFoliage(scene, cx = 0, cz = 0) {
 
     // meadow flowers nestled into the top of each clump
     const flowerMat = new THREE.MeshStandardMaterial({
-      map: makeMeadowFlowerTexture(),
+      map: A.scatterFlowerTex,
       alphaTest: 0.4,
       side: THREE.DoubleSide,
       roughness: 0.9,
@@ -290,7 +322,7 @@ export function createFoliage(scene, cx = 0, cz = 0) {
     applyWind(flowerMat, { strength: 0.15, freq: 2.0, heightFactor: 0.6 });
     keepAuthoredNormals(flowerMat);
     const FLOWERS = 4;
-    const flowers = new THREE.InstancedMesh(crossCards(0.55, 0.55), flowerMat, spots.length * FLOWERS);
+    const flowers = new THREE.InstancedMesh(A.scatterFlowerGeo, flowerMat, spots.length * FLOWERS);
     flowers.receiveShadow = true;
     let fi = 0;
     for (const f of spots) {

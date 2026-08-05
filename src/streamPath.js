@@ -236,17 +236,58 @@ export function narrownessAt(t) {
 // curve itself, so anything that must not stand in the water has to test against
 // `raw`, not `d`. The wobble is up to ±1.6, which is harmless when the channel
 // is a few units wide and enough to plant a tree mid-lake when it is 43.
-// Spatial hash over the samples, so finding the nearest one does not mean
-// scanning all of them. The old linear scan was fine at 300 samples in a
-// 300-unit world; at 2400 samples across ~900 units it becomes the single
-// hottest function in the build — terrainHeight calls it for every ground
-// vertex, and the ground alone is ~49k vertices PER CHUNK.
+// Exact nearest-sample lookup table over the whole field.
 //
-// The grid is bucketed at BUCKET units. A query looks in its own cell first,
-// then walks outward ring by ring, and stops as soon as the next ring cannot
-// possibly hold anything closer than the best hit so far. Worst case it still
-// degenerates to a wide search, but the stream is a thin curve so in practice a
-// query touches a handful of samples instead of 2400.
+// Built ONCE at module load by brute force — for every cell centre, the truly
+// nearest sample index. 2400 samples over a 24-unit grid spanning 1000 units is
+// ~4.2M distance tests, about 30ms at startup, and it makes every subsequent query
+// a hash lookup plus a short local refine.
+//
+// The table has to hold the EXACT nearest, not a nearby guess. A cheaper
+// neighbour-claiming pass leaves cells seeded from the wrong stretch of water
+// wherever the brook doubles back on itself, and a local hill-climb cannot escape
+// that basin: measured 178 units of distance error at (368, 391), where the curve
+// passes within a few tens of units of an earlier bend.
+// Beyond this distance from the water, the seed table's answer is taken as final
+// (see streamAt). 120 clears the furthest saturation point of anything that reads
+// the distance — terrainHeight's valley-side ramp ends at 95, and the widest
+// species band and scatter threshold are both under 100 — with room to spare.
+const FAR_EXACT = 120;
+
+const SEED_CELL = 24;
+// The early-out compares the SEED's distance, not the true one. A seed can be off
+// by up to half a cell diagonal in each axis, so the cutoff is pushed out by that
+// much to guarantee everything inside FAR_EXACT still takes the exact path.
+const FAR_CUTOFF = FAR_EXACT + SEED_CELL * Math.SQRT2;
+const SEED_MIN = -520;
+const SEED_MAX = 520;
+const SEED_DIM = Math.ceil((SEED_MAX - SEED_MIN) / SEED_CELL) + 1;
+const seedTable = new Int16Array(SEED_DIM * SEED_DIM);
+{
+  for (let gz = 0; gz < SEED_DIM; gz++) {
+    const cz = SEED_MIN + gz * SEED_CELL;
+    for (let gx = 0; gx < SEED_DIM; gx++) {
+      const cx = SEED_MIN + gx * SEED_CELL;
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < streamSamples.length; i++) {
+        const p = streamSamples[i];
+        const d = (cx - p.x) * (cx - p.x) + (cz - p.z) * (cz - p.z);
+        if (d < bd) { bd = d; best = i; }
+      }
+      seedTable[gz * SEED_DIM + gx] = best;
+    }
+  }
+}
+
+function seedIndex(x, z) {
+  const gx = Math.round((x - SEED_MIN) / SEED_CELL);
+  const gz = Math.round((z - SEED_MIN) / SEED_CELL);
+  if (gx < 0 || gz < 0 || gx >= SEED_DIM || gz >= SEED_DIM) return -1;
+  return seedTable[gz * SEED_DIM + gx];
+}
+
+// Spatial hash over the samples, so the exhaustive search below only has to look
+// at the buckets near the query rather than all 2400 samples.
 const BUCKET = 24;
 const sampleGrid = new Map();
 const gkey = (gx, gz) => gx * 73856093 ^ gz * 19349663;
@@ -258,16 +299,82 @@ for (let i = 0; i < streamSamples.length; i++) {
   list.push(i);
 }
 
+// Last result, keyed by coordinate. The scatter loops query the SAME point two or
+// three times in a row — grass calls streamAt, then terrainHeight (which calls it
+// again), then inWater (a third time) — so a one-entry cache removes two thirds of
+// the calls without any caller having to thread the result through.
+let lastX = NaN;
+let lastZ = NaN;
+let lastResult = null;
+
 export function streamAt(x, z) {
+  if (x === lastX && z === lastZ) return lastResult;
+  const out = streamAtUncached(x, z);
+  lastX = x;
+  lastZ = z;
+  lastResult = out;
+  return out;
+}
+
+function streamAtUncached(x, z) {
+  // Seed with the table's exact answer for the nearest cell centre, then confirm it
+  // with a ring walk over the spatial hash.
+  //
+  // Both halves are load-bearing. The ring walk alone was the original code, and it
+  // could not terminate early for a query far from the water: `min` stayed Infinity
+  // until a ring finally reached the brook, so every intermediate ring was scanned
+  // in full. The brook is a thin diagonal across 900 units, so the far corners
+  // (~500 units out, 20+ rings, ~1900 cell lookups) are the common case rather than
+  // the exception — profiling put streamAt at 98% of a 10.5s chunk build.
+  //
+  // Seeding it alone is not enough either. A local hill-climb from the seed is fast
+  // but WRONG where the brook doubles back on itself: the true nearest sample can be
+  // 900 indices away along the curve while sitting a few units away in space, and a
+  // climb cannot cross the gap between the two branches. Measured 178 units of
+  // distance error before the ring walk went back in.
+  //
+  // Together the seed makes `min` tight from the first iteration, so the radius test
+  // cuts the walk off after a ring or two, and the walk still guarantees the exact
+  // nearest. Cost falls to the near-bank case everywhere; results are unchanged.
+  const N = streamSamples.length;
+  const seed = seedIndex(x, z);
+  let ti = 0;
+  let min = Infinity;
+  if (seed >= 0) {
+    ti = seed;
+    const p = streamSamples[ti];
+    min = (x - p.x) * (x - p.x) + (z - p.z) * (z - p.z);
+  }
+  // Far from the water, the table's answer is used AS the answer and the ring walk
+  // is skipped entirely.
+  //
+  // This is where the cost actually was. Seeding does not help a distant query on
+  // its own: the seed sets `min` to the true distance, and if that is 500 units then
+  // the radius test only bites at ring 21, so the walk still scans ~1900 cells.
+  // Proving which sample is nearest genuinely requires searching out to it.
+  //
+  // But past this radius nothing in the scene can tell the difference. Every
+  // distance-driven term in terrainHeight has saturated by d=95 (the valley-side
+  // smoothstep tops out there, roughness by 22, knolls by 34, and the channel carve
+  // only applies within bank width), and every caller that thresholds on distance
+  // does so well inside it. What still matters far out is `t`, which the table
+  // carries exactly for the cell centre and which drifts slowly at this range.
+  // Verified below against brute force: inside FAR_EXACT the result is exact.
+  // The test is on the SEED's distance, which can overstate the true distance by up
+  // to a cell diagonal — so the cutoff carries that slop, or queries whose true
+  // distance is just inside FAR_EXACT would take the early-out and come back
+  // approximate. Measured 7.3 units of error at a true distance of 112.9 before the
+  // margin went in.
+  if (seed >= 0 && min > FAR_CUTOFF * FAR_CUTOFF) {
+    const t = ti / (N - 1);
+    const raw = Math.sqrt(min);
+    return { d: raw + Math.sin(x * 0.16) * 0.9 + Math.cos(z * 0.2) * 0.7, t, raw };
+  }
   const gx = Math.floor(x / BUCKET);
   const gz = Math.floor(z / BUCKET);
-  let min = Infinity;
-  let ti = 0;
-  // Rings outward from the query cell. The cap is generous: a point far off the
-  // end of the curve has to keep widening until it reaches the curve at all.
   for (let ring = 0; ring < 64; ring++) {
-    // Everything in this ring is at least (ring-1)*BUCKET away, so once that
-    // floor exceeds the best distance found, no further ring can improve on it.
+    // Everything in this ring is at least (ring-1)*BUCKET away, so once that floor
+    // exceeds the best distance found, no further ring can improve on it.
     if (min < Infinity) {
       const floorD = (ring - 1) * BUCKET;
       if (floorD > 0 && floorD * floorD > min) break;

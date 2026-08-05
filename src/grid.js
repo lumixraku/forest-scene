@@ -88,9 +88,14 @@ export function withChunkRng(cx, cz, salt, fn) {
 // singletons across all chunks, so they are deliberately NOT disposed — dropping
 // a material on unload would force three.js to recompile its shader program the
 // next time any chunk used it, which on this scene is a visible hitch.
+//
+// Some GEOMETRY is shared too, for the same reason: the understory's card meshes
+// and blob shells are identical in every chunk, so they are built once. Those are
+// tagged `userData.shared` and skipped here — disposing one on unload would leave
+// every other chunk drawing a freed buffer.
 export function disposeGroup(group) {
   group.traverse((obj) => {
-    if (obj.geometry) obj.geometry.dispose();
+    if (obj.geometry && !obj.geometry.userData.shared) obj.geometry.dispose();
   });
   group.clear();
 }

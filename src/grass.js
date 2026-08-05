@@ -39,17 +39,42 @@ function sharedGrass() {
 
 // One chunk's worth of grass. `update` still handles distance thinning, but it
 // is now driven by the chunk manager across every loaded chunk's sub-chunks.
-export function createGrass(scene, cx = 0, cz = 0) {
+// How many frames one chunk's grass is spread over.
+//
+// 60k tufts costs ~270ms to place, and the manager's whole frame budget is 8ms.
+// The budget is only checked BETWEEN steps, so grass as a single step overran it by
+// 30x and was the last visible stall: after everything else was fixed, the only
+// frames over 100ms left in a refresh were the grass steps.
+//
+// Each band places its own share of the tufts over a horizontal strip of the chunk
+// and builds the meshes for that strip, so a band is a complete, drawable piece of
+// grass rather than a partial one.
+export const GRASS_BANDS = 4;
+
+// `band` selects which strip to build (0..GRASS_BANDS-1) and `prev` is the handle
+// from the previous band, which this one extends. Called with no band, it builds the
+// whole chunk at once — the standalone path, still used by the tests.
+export function createGrass(scene, cx = 0, cz = 0, band = null, prev = null) {
   const { geo, mat } = sharedGrass();
 
   // Same 60k tufts over the same 300x300 area as before, so density per square
   // metre is unchanged; the field is now one chunk rather than the whole world.
-  const COUNT = 60000;
   const FIELD = CHUNK - 10; // small inset, matching the original 290-of-300
   const GRID = 8; // 8x8 sub-chunks, for frustum culling and distance thinning
   const CELL = FIELD / GRID;
   const origin = chunkCentre(cx, cz);
-  const group = new THREE.Group();
+  // A band owns GRID/GRASS_BANDS rows of sub-chunks, and its share of the tufts.
+  const ROWS = band === null ? GRID : GRID / GRASS_BANDS;
+  const ROW0 = band === null ? 0 : band * ROWS;
+  // Attempts, not tufts — see the loop below. 135k attempts over a whole chunk is
+  // what the old quota-chasing loop actually spent to reach 60k tufts, so the
+  // overall density is unchanged.
+  const ATTEMPTS = Math.round(135000 * (ROWS / GRID));
+  // Placements are rejected unless they fall in this band's strip, so the bands
+  // together cover the chunk exactly once.
+  const zLo = origin.z - FIELD / 2 + ROW0 * CELL;
+  const zHi = zLo + ROWS * CELL;
+  const group = prev ? prev.group : new THREE.Group();
 
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
@@ -58,12 +83,26 @@ export function createGrass(scene, cx = 0, cz = 0) {
 
   // bucket the placements per chunk first, then build one mesh per chunk
   const buckets = Array.from({ length: GRID * GRID }, () => ({ mats: [], cols: [] }));
+  // A fixed number of ATTEMPTS, keeping whatever passes — not a fixed number of
+  // tufts.
+  //
+  // Chasing a quota made the cost depend on the local density: `keep` bottoms out
+  // near 0.12 far from the water, so a strip out on the dry slopes rejected ~20x
+  // per hit and took 247ms to fill the same 15k tufts a near-water strip filled in
+  // 42ms. Worse, forcing the quota fought the density function it was sampling —
+  // grass is meant to thin going up the slopes, and the quota pulled it back to flat.
+  //
+  // With attempts fixed, cost is bounded everywhere and density follows `keep` the
+  // way it was written to.
   let placed = 0;
   let attempts = 0;
-  while (placed < COUNT && attempts < COUNT * 14) {
+  while (attempts < ATTEMPTS) {
     attempts++;
     const x = origin.x + (Math.random() - 0.5) * FIELD;
-    const z = origin.z + (Math.random() - 0.5) * FIELD;
+    // Draw z across the band only. Sampling the whole chunk and rejecting outside
+    // the strip would work too, but it would throw away (GRASS_BANDS-1)/GRASS_BANDS
+    // of every draw and put the cost straight back.
+    const z = zLo + Math.random() * (zHi - zLo);
     const { d: sd, t } = streamAt(x, z);
 
     // dense near the stream corridor, thinning up the slopes — but with a
@@ -98,7 +137,8 @@ export function createGrass(scene, cx = 0, cz = 0) {
     placed++;
   }
 
-  const cells = [];
+  // Cells accumulate across bands, so the density update sees the whole chunk.
+  const cells = prev ? prev.cells : [];
   buckets.forEach((bucket, bi) => {
     const n = bucket.mats.length;
     if (n === 0) return;
@@ -118,7 +158,7 @@ export function createGrass(scene, cx = 0, cz = 0) {
     cells.push({ mesh, full: n, centre: new THREE.Vector2(ccx, ccz) });
   });
 
-  scene.add(group);
+  if (!prev) scene.add(group);
 
   // distance-based density: full within 60m of the camera, fading to 15%
   // far out where a tuft is subpixel anyway. The manager calls this for every

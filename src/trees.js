@@ -106,7 +106,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   // ---- pagoda (小叶榄仁) — broad flat umbrella, the signature tree ----
   const pagodas = placeSpecies({
     origin,
-    count: 58, minD: 10, maxD: 100, sRange: [0.9, 1.4],
+    count: 58, minD: 10, sRange: [0.9, 1.4],
     // hand-placed trees framing the opening camera view from both banks
     fixed: [{ x: -26, z: -24.5, s: 1.25 }, { x: -13, z: -2.5, s: 1.35 }],
   });
@@ -123,7 +123,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   });
 
   // ---- pine — mid-ground conifer, full cone from near the ground ----
-  const pines = placeSpecies({ origin, count: 76, minD: 16, maxD: 130, sRange: [0.85, 1.4] });
+  const pines = placeSpecies({ origin, count: 76, minD: 16, sRange: [0.85, 1.4] });
   addTrunks(group, pines, makeTrunkGeo({ topR: 0.11, botR: 0.4, h: 12, flare: 3.2 }), pineBark);
   addCanopy(group, pines, pineTex, {
     crownBase: 2.0, crownTop: 13.4, radius: 2.7,
@@ -132,7 +132,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   });
 
   // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
-  const highPines = placeSpecies({ origin, count: 38, minD: 20, maxD: 110, sRange: [0.9, 1.4] });
+  const highPines = placeSpecies({ origin, count: 38, minD: 20, sRange: [0.9, 1.4] });
   addTrunks(group, highPines, makeTrunkGeo({ topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 }), highBark);
   addDeadSticks(group, highPines, highBark);
   addCanopy(group, highPines, highTex, {
@@ -150,6 +150,12 @@ export function createTrees(scene, cx = 0, cz = 0) {
     origin,
     // trimmed from 38: the ginkgos are no longer the only gold in the valley, so
     // at the old count the warm side of the palette was overweight overall
+    //
+    // One of only two species that keeps a `maxD`, and here it is a real statement
+    // about the tree rather than a leftover: these are the bank trees, pale bent
+    // trunks leaning over the water. A ginkgo out on a dry ridge 300 units from the
+    // brook is not the same tree. Chunks the stream never reaches simply have no
+    // ginkgos, which is the intent.
     count: 26, minD: 12, maxD: 45, sRange: [0.85, 1.25],
     fixed: [{ x: -30, z: -0.5, s: 1.2 }, { x: -16, z: -26, s: 1.15 }],
   });
@@ -177,7 +183,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   // valley. One hand-placed tree stays in the framing set, at the edge of view.
   const maples = placeSpecies({
     origin,
-    count: 24, minD: 30, maxD: 96, sRange: [0.85, 1.3],
+    count: 24, minD: 30, sRange: [0.85, 1.3],
     fixed: [{ x: -34, z: -30, s: 1.2 }],
   });
   addTrunks(group, maples, makeTrunkGeo({ topR: 0.13, botR: 0.42, h: 9.4, flare: 3.0, bend: 0.3 }), mapleBark);
@@ -198,7 +204,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   // than as three tinted trees.
   const ambers = placeSpecies({
     origin,
-    count: 26, minD: 34, maxD: 108, sRange: [0.85, 1.35],
+    count: 26, minD: 34, sRange: [0.85, 1.35],
   });
   addTrunks(group, ambers, makeTrunkGeo({ topR: 0.12, botR: 0.4, h: 10.2, flare: 3.1, bend: 0.26 }), mapleBark);
   addCanopy(group, ambers, amberTex, {
@@ -212,7 +218,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   // species in that shape would just thicken the same note. A narrow vertical
   // gives the warm group a second silhouette, and a column of pale yellow set
   // among green cones is the cheapest vertical rhythm in the scene.
-  const poplars = placeSpecies({ origin, count: 30, minD: 40, maxD: 124, sRange: [0.8, 1.3] });
+  const poplars = placeSpecies({ origin, count: 30, minD: 40, sRange: [0.8, 1.3] });
   addTrunks(group, poplars, makeTrunkGeo({ topR: 0.08, botR: 0.32, h: 15.5, flare: 2.4 }), poplarBark);
   addCanopy(group, poplars, yellowTex, {
     crownBase: 2.6, crownTop: 17.2, radius: 1.9,
@@ -231,6 +237,11 @@ export function createTrees(scene, cx = 0, cz = 0) {
   // at close range — at 80m the tiers merge into one flat plate and it becomes an
   // ordinary umbrella. So a handful stay in the foreground where the layering
   // shows, and the count is low to compensate for sitting where it is.
+  //
+  // The other species that keeps a `maxD`, for that reason: the ceiling here is a
+  // LEGIBILITY bound, not a habitat one. Placing these out where they can only be
+  // seen from far away spends the scene's most expensive crown profile (40 lathe
+  // rings) on a silhouette that reads as a plain umbrella at that range.
   const goldPagodas = placeSpecies({
     origin,
     count: 16, minD: 14, maxD: 74, sRange: [0.9, 1.35],
@@ -244,7 +255,7 @@ export function createTrees(scene, cx = 0, cz = 0) {
   });
 
   // ---- spruce — darkest, tallest cones on the background slopes ----
-  const spruces = placeSpecies({ origin, count: 110, minD: 48, maxD: 140, sRange: [0.7, 1.45] });
+  const spruces = placeSpecies({ origin, count: 110, minD: 48, sRange: [0.7, 1.45] });
   addTrunks(group, spruces, makeTrunkGeo({ topR: 0.08, botR: 0.46, h: 17, flare: 2.8 }), spruceBark);
   addCanopy(group, spruces, darkTex, {
     crownBase: 1.8, crownTop: 18.4, radius: 2.8,
@@ -266,7 +277,20 @@ const TREE_SCALE = 2;
 // Rejection-sampled placements along the stream distance bands. The forest
 // thickens away from the water, and the opening camera position stays clear
 // so a random tree never spawns right in front of the initial view.
-function placeSpecies({ origin, count, minD, maxD, sRange, fixed = [] }) {
+//
+// `minD` is a hard floor for every species — it is what keeps trunks out of the
+// channel — but `maxD` is OPT-IN, and only riparian species pass it.
+//
+// It used to apply to everything, which was invisible while the scene was a
+// single 300-unit square with the brook running through it: every point of that
+// square sat inside some species' band, so the ceiling never actually rejected
+// anything. Across the 3x3 the brook only cuts the diagonal, and the two far
+// corner chunks lie 160+ units from water — past the widest ceiling here (spruce
+// at 140). Both of them came out completely bare, and the two edge chunks grew
+// only the handful of species whose ceiling reached that far. So a ceiling now
+// means "this tree only grows near water", which is a claim about the ginkgos and
+// nothing else; the forest species carry the whole field.
+function placeSpecies({ origin, count, minD, maxD = Infinity, sRange, fixed = [] }) {
   // The hand-placed framing trees belong to the middle chunk only — they were
   // authored in world coordinates to frame the opening camera view, so repeating
   // them in all nine chunks would clone that arrangement across the valley.

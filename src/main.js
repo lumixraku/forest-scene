@@ -70,8 +70,12 @@ const particles = createParticles(scene, new THREE.Vector2(0, -16));
 // Each chunk runs toonify over its own new meshes as it lands, and asks for one
 // shadow-map refresh. toonify keeps a module-level record of what it has already
 // patched, so the shared materials are only ever compiled once.
-const chunks = createChunkManager(scene, camera, () => {
-  toonify(scene);
+const chunks = createChunkManager(scene, camera, (built) => {
+  // Patch only what just landed. toonify keeps a module-level record of the
+  // materials it has already compiled, so this is about the traversal: walking the
+  // whole scene on every step re-visits everything already built and gets more
+  // expensive the more of the field exists.
+  if (built) toonify(built);
   renderer.shadowMap.needsUpdate = true;
 });
 
