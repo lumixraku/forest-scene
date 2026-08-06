@@ -458,3 +458,22 @@ Uncaught TypeError: Cannot destructure property 'radiusNear' of 'undefined'
 - **四棵手工框景树一直没被放出来**：所在位置地形高 2.90 < 水位 4.50，被 `inWater` 拒绝。既有问题，HEAD 的注释已自述「水潭变宽把它们吞了」。
 - `src/chunks.js` 现已无任何引用；`src/godrays.js` 同样无引用。均未删除。
 - 溪流 ribbon 分段经实测放弃，理由见上一节。
+
+---
+
+## 2026-08-06 多色多树种
+
+**分支:** master
+
+**改动:**
+- `src/textures.js`: 新增 `drawMapleLeaf`（五瓣极坐标枫叶）和 `drawFanLeaf`（扇形银杏叶）两种叶形；`makeCanopyTexture` 的 pierce 分支根据 `leaf` 参数选用对应绘制函数，并按叶片面积缩减密度以保持镂空效果。
+- `src/trees.js`: 新增三个树种 `mapleRed`（红枫）、`mapleOrange`（橙枫）、`deep`（深绿阔叶），对应纹理和树皮材质。注册到 NEAR/FAR 分层。银杏纹理改用 `leaf:'fan'`，枫树纹理改用 `leaf:'maple'`。
+- 全部绿色系树种的色相抖动从 ±0.03 扩大到 ±0.075（~±27°），暖色系通过 `hueVar` 字段限回窄带避免偏色。
+
+**验证:**
+- 截图对比 diff: 全帧 luma delta -3.2（略暗，合理——多了深绿背景树）。
+- 实例颜色统计: 8 种冠层材质均已放置（共 1523 棵），红/橙/金约占 11%。
+- walk 路线: 0 holes, deterministic revisits, geometry bounded (peak 146), no console errors.
+- draw calls 259→332 (+28%)，三角形 2.58M，textures 38→43。帧率未见下降。
+
+**遗留:** None.

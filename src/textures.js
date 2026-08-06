@@ -204,6 +204,59 @@ function drawLeaf(ctx, x, y, ang, len, colors, widthK = 0.42) {
   }
 }
 
+// A five-lobed maple leaf. The silhouette is a polar sweep whose radius peaks
+// five times, so the lobes and the notches between them come from one curve
+// rather than from a hand-plotted outline that would need retuning per size.
+function drawMapleLeaf(ctx, x, y, ang, len, colors) {
+  const r = Math.random();
+  ctx.fillStyle = r < 0.34 ? colors[0] : r < 0.72 ? colors[1] : colors[2];
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang + Math.PI / 2);
+  ctx.beginPath();
+  const N = 44;
+  for (let i = 0; i <= N; i++) {
+    const a = -Math.PI + (i / N) * Math.PI * 2;
+    const lobe = Math.pow(Math.abs(Math.cos(2.5 * a)), 0.55);
+    const rad = len * 0.5 * (0.34 + 0.66 * lobe);
+    const px = Math.sin(a) * rad;
+    const py = -Math.cos(a) * rad;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+// A ginkgo fan: a wedge from the petiole that widens to a broad arc, with a
+// notch cut into the middle of the outer edge. Drawn as an arc plus two straight
+// flanks — the notch is what makes it read as ginkgo rather than as a triangle.
+function drawFanLeaf(ctx, x, y, ang, len, colors) {
+  const r = Math.random();
+  ctx.fillStyle = r < 0.34 ? colors[0] : r < 0.72 ? colors[1] : colors[2];
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang - Math.PI / 2);
+  const R = len * 0.72;
+  const half = 0.62; // half-angle of the fan, radians
+  const notch = 0.16;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  const arc = (a0, a1) => {
+    const N = 10;
+    for (let i = 0; i <= N; i++) {
+      const a = a0 + (a1 - a0) * (i / N);
+      ctx.lineTo(Math.sin(a) * R, -Math.cos(a) * R);
+    }
+  };
+  arc(-half, -notch);
+  ctx.lineTo(0, -R * 0.68); // the central notch
+  arc(notch, half);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 // Sun/shade grade baked into a foliage card: warm light from above, cool
 // depth below. Applied source-atop so the alpha silhouette is untouched.
 function shadeTopDown(ctx, W, H, topA = 0.2, botA = 0.42) {
@@ -429,7 +482,7 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
 // noise, whereas gaps the size of a leaf cluster give the mass its depth. The
 // caller must pair this with alphaTest + DoubleSide, or the shell's far wall
 // disappears and the crown reads as a hollow husk.
-export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false } = {}) {
+export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false, leaf = 'oval' } = {}) {
   // 1024, not 512. This sheet wraps ONCE around a crown, and a big crown is ~44m
   // in circumference, so at 512 one texel is ~9cm and an 18-texel leaf becomes a
   // 1.6m petal — which is why the leaves read as cabbage no matter how the stroke
@@ -468,18 +521,28 @@ export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { 
     // tissue paper — which is the original "too messy" complaint coming back at a
     // smaller scale. The silhouette belongs to the geometry; alpha's job here is
     // a few sky gaps INSIDE an intact mass, so err on the dense side.
+    // Leaf shape is per-species. Maple and fan leaves are BROADER than the oval
+    // at the same `len`, so a clump of them covers more ground; their counts are
+    // scaled down to keep coverage — and therefore hole size — matched to the
+    // oval crowns. Without this the maples come out as solid sheets with no sky
+    // through them, which is the openwork trick failing silently.
+    const shape = leaf === 'maple' ? drawMapleLeaf : leaf === 'fan' ? drawFanLeaf : null;
+    const density = leaf === 'oval' ? 1 : 0.62;
     const CLUMPS = 520;
     for (let i = 0; i < CLUMPS; i++) {
       const cx = Math.random() * S;
       const cy = Math.random() * S;
       const cr = 26 + Math.random() * 22;
-      const leaves = 30 + ((Math.random() * 20) | 0);
+      const leaves = Math.round((30 + ((Math.random() * 20) | 0)) * density);
       wrap(() => {
         for (let k = 0; k < leaves; k++) {
           const a = Math.random() * Math.PI * 2;
           const r = Math.sqrt(Math.random()) * cr;
-          drawLeaf(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r,
-            a + (Math.random() - 0.5) * 1.4, 13 + Math.random() * 9, colors, 0.62);
+          const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
+          const pa = a + (Math.random() - 0.5) * 1.4;
+          const len = 13 + Math.random() * 9;
+          if (shape) shape(ctx, px, py, pa, len, colors);
+          else drawLeaf(ctx, px, py, pa, len, colors, 0.62);
         }
       });
     }

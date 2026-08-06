@@ -62,6 +62,10 @@ export function createTrees(scene) {
   const spruceBark = makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' });
   // ginkgo bark: grey-brown furrowed wood
   const ginkgoBark = makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false });
+  // maple bark: greyer and slightly cooler than the conifers, so a red crown does
+  // not sit on a trunk that is already warm and lose its contrast
+  const mapleBark = makeBarkTexture({ base: '#9a8b7d', crack: 'rgba(46,38,32,1)', ridge: 'rgba(200,188,172,1)' });
+  const deepBark = makeBarkTexture({ base: '#8d7660', crack: 'rgba(46,36,26,1)', ridge: 'rgba(176,154,126,1)' });
 
   // One canopy texture per palette, shared by every tree of that species.
   // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
@@ -85,8 +89,19 @@ export function createTrees(scene) {
   const pineTex = makeCanopyTexture(['#5c8f45', '#6ea451', '#86bc63'], PIERCE);
   const highTex = makeCanopyTexture(['#67974a', '#7cad58', '#94c56b'], PIERCE);
   const darkTex = makeCanopyTexture(['#4d8043', '#63954f', '#7bad60'], PIERCE);
-  const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], PIERCE);
+  // Ginkgo now draws real fan leaves rather than the generic pointed oval — the
+  // one leaf shape distinctive enough to be worth recognising at close range.
+  const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], { pierce: true, leaf: 'fan' });
   const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
+  // ---- the autumn accents ----
+  // Two new palettes, both on five-lobed maple leaves. Scarlet is the loud one and
+  // is kept rare; amber sits between the scarlet and the golds so the warm end of
+  // the frame has a middle step instead of jumping from gold straight to red.
+  const mapleRedTex = makeCanopyTexture(['#a8321f', '#c8492a', '#e06a3c'], { pierce: true, leaf: 'maple' });
+  const mapleOrangeTex = makeCanopyTexture(['#c26a18', '#dd8a26', '#efab45'], { pierce: true, leaf: 'maple' });
+  // A deep-green broadleaf. Not an accent — this is the anchor that keeps the
+  // canopy from turning into all-autumn once the warm species are in.
+  const deepTex = makeCanopyTexture(['#2f6136', '#3d7844', '#519055'], PIERCE);
 
   // Every species' shared assets, built ONCE here rather than per cell: the trunk
   // profile, the three crown lathe variants, and the materials. A cell only ever
@@ -163,7 +178,60 @@ export function createTrees(scene) {
         // Held below the greens. Gold at the same brightness as the canopy around it
         // stops being an accent — 38 ginkgos lit to 0.94 read as half the forest
         // being autumn, which is not what the banks are for.
-        hue: 0.13, sat: 0.26, light: 0.82,
+        hue: 0.13, sat: 0.26, light: 0.82, hueVar: 0.03,
+      },
+    },
+
+    // ---- red maple — the loud accent, deliberately sparse ----
+    // Density is a third of the pagoda's on purpose. A scarlet crown carries far
+    // more attention than its area suggests, so matching the greens' density here
+    // would read as an autumn scene rather than a green valley with autumn in it.
+    // Held wide of the water like the pagodas so the reds spread across the slope
+    // instead of lining the banks.
+    mapleRed: {
+      density: 0.00048, minD: 14, maxD: 105, sRange: [0.85, 1.3],
+      trunk: { topR: 0.12, botR: 0.38, h: 10.6, flare: 3.0, bend: 0.25 },
+      bark: mapleBark,
+      tex: mapleRedTex,
+      crown: {
+        crownBase: 3.0, crownTop: 11.4, radius: 3.1,
+        profile: 'dome',
+        // Red is the one hue where the texture cannot carry the colour alone: the
+        // instance tint multiplies it, and any green in the tint would mud it. Hue
+        // sits at the warm end and `light` stays below the greens so the crown
+        // reads as saturated rather than pink.
+        hue: 0.035, sat: 0.34, light: 0.8, hueVar: 0.022,
+      },
+    },
+
+    // ---- orange maple — the middle step between the reds and the golds ----
+    mapleOrange: {
+      density: 0.00062, minD: 12, maxD: 95, sRange: [0.85, 1.3],
+      trunk: { topR: 0.12, botR: 0.36, h: 10.2, flare: 3.0, bend: 0.3 },
+      bark: mapleBark,
+      tex: mapleOrangeTex,
+      crown: {
+        crownBase: 2.9, crownTop: 11.0, radius: 3.0,
+        profile: 'dome',
+        hue: 0.075, sat: 0.32, light: 0.84, hueVar: 0.026,
+      },
+    },
+
+    // ---- deep green broadleaf — the anchor for the warm species above ----
+    // Runs in the FAR tier with the conifers: its job is to hold the slopes green
+    // behind the accents, which is a background job, and the far tier is where the
+    // background species live.
+    deep: {
+      density: 0.00120, minD: 40, maxD: 135, sRange: [0.8, 1.35],
+      trunk: { topR: 0.12, botR: 0.42, h: 12.4, flare: 3.0 },
+      bark: deepBark,
+      tex: deepTex,
+      crown: {
+        crownBase: 3.2, crownTop: 13.6, radius: 3.2,
+        profile: 'dome',
+        // The deepest green in the scene, and the only one allowed below the others
+        // in value — it is what the warm crowns are read against.
+        hue: 0.33, sat: 0.3, light: 0.78,
       },
     },
 
@@ -195,8 +263,11 @@ export function createTrees(scene) {
     Object.assign(s, makeCanopyAssets(s.tex, s.crown));
   }
 
-  const NEAR = ['pagoda', 'high', 'ginkgo'];
-  const FAR = ['pine', 'spruce'];
+  // The two tiers must stay DISJOINT — see the header note. The maples are
+  // close-range accents so they join the near tier; `deep` is a background filler
+  // so it joins the far one. No species appears in both.
+  const NEAR = ['pagoda', 'high', 'ginkgo', 'mapleRed', 'mapleOrange'];
+  const FAR = ['pine', 'spruce', 'deep'];
   const materials = [];
   for (const s of Object.values(SPECIES)) {
     materials.push(s.trunkMat, s.canopyMat);
@@ -524,10 +595,16 @@ function addCanopy(scene, out, trees, s) {
     // the only job here is telling one crown from the next — a wide lightness
     // range means some crowns come out visibly dark, which is what broke up the
     // canopy into a patchwork before.
+    // Hue spread is per species. The greens get a WIDE one (±0.075 ≈ ±27°), which
+    // is what puts yellow-green and blue-green crowns side by side inside a single
+    // species instead of one flat green — the "same tone everywhere" complaint.
+    // The warm species override it down to a narrow band: at ±27° a scarlet maple
+    // would swing into magenta on one side and brown on the other, so for those the
+    // variation has to live in saturation and value, not hue.
     col.setHSL(
-      p.hue + (Math.random() - 0.5) * 0.03,
-      (p.sat ?? 0.24) + (Math.random() - 0.5) * 0.08,
-      p.light + (Math.random() - 0.5) * 0.07
+      p.hue + (Math.random() - 0.5) * (p.hueVar ?? 0.075),
+      (p.sat ?? 0.24) + (Math.random() - 0.5) * 0.1,
+      p.light + (Math.random() - 0.5) * 0.09
     );
     g.cols.push(col.clone());
   });
