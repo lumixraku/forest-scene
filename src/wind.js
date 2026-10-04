@@ -28,6 +28,46 @@ export function applyWind(material, { strength = 0.3, freq = 1.4, heightFactor =
 }
 
 /**
+ * Meadow wind: gusts that TRAVEL across the field instead of every tuft nodding
+ * on its own phase. The phase comes from world position along the wind, so a
+ * band of bent grass rolls over the meadow, and blades in the gust brighten
+ * slightly as their paler sides turn up — the BotW grass wave. Bend grows with
+ * height squared so blades curve from the root rather than shearing. The push is
+ * along one WORLD direction, rotated into each tuft's frame, since tufts are
+ * randomly yawed.
+ */
+export function applyGrassWind(material, { strength = 0.22, heightFactor = 1.6 } = {}) {
+  material.userData.wind = { uniforms: null };
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = { value: 0 };
+    material.userData.wind.uniforms = shader.uniforms;
+    shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       {
+         vec2 ip = instanceMatrix[3].xz;
+         float h = transformed.y * ${heightFactor.toFixed(4)};
+         float bend = h * h;
+         float gust = sin(dot(ip, vec2(0.085, 0.055)) - uTime * 1.6) * 0.5 + 0.5;
+         gust *= gust;
+         float flutter = sin(uTime * 3.3 + ip.x * 1.7 + ip.y * 1.3);
+         float amp = ((0.3 + gust) + flutter * 0.18) * ${strength.toFixed(4)} * bend;
+         mat3 im = mat3(instanceMatrix);
+         transformed += transpose(im) * vec3(0.83, 0.0, 0.56) * amp / dot(im[0], im[0]);
+         transformed.y -= amp * amp * 0.6;
+         #ifdef USE_COLOR
+           vColor.rgb *= 1.0 + gust * min(h, 1.0) * 0.22;
+         #endif
+       }`
+    );
+  };
+  material.customProgramCacheKey = () => `grasswind-${strength}-${heightFactor}`;
+  windMaterials.push(material);
+  return material;
+}
+
+/**
  * Wind for per-branch instanced cards: sway scales with the card UV instead
  * of world height, so each branch pivots at its root (uv 0) and flutters at
  * its tip (uv 1). axis 'x' = horizontal branch cards, 'y' = vertical cards.

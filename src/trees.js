@@ -4,42 +4,43 @@ import { applyCanopyWind, keepAuthoredNormals } from './wind.js';
 import { cellSeed, withSeed } from './rng.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, streamCurve, inWater, HOME_T } from './streamPath.js';
-import { makeCanopyTexture, makeBarkTexture } from './textures.js';
+import { makeLeafClumpTexture, makeBarkTexture } from './textures.js';
 
-// Storybook forest: every crown is a SOLID MASS, not a cloud of leaf cards.
+// Genshin / BotW-style crowns: a crown is a handful of leaf LUMPS laid over the
+// species' profile (dome or umbrella), and each lump is a puff of
+// camera-facing leaf-clump cards.
 //
-// The crowns used to be tiers of whorled drooping cards, each carrying a fully
-// drawn alpha-cut branch. Every card had its own jittered yaw, droop, length and
-// tint, so a tree was a few hundred thin blades pointing in a few hundred
-// directions: broken silhouette, no readable crown shape, and from any distance
-// the whole forest dissolved into scraggle.
-//
-// Now a crown is a handful of overlapping lumpy spheroids ("blobs") stacked on a
-// profile curve — cone, dome or umbrella depending on species. The silhouette
-// comes from the geometry, so it is closed and legible; the leaves come from a
-// fully OPAQUE canopy texture, so there is no alpha-test fringe and no overdraw.
-// Three rules keep it from going messy again:
-//   * blobs are yawed only, never pitched — the vertical squash stays horizontal
-//     so the crown never shears into a lopsided pile
-//   * one tint per TREE, not per blob, so a crown reads as a single mass
-//   * ring radius and blob radius are locked in proportion, so neighbouring
-//     blobs always overlap and the mass never opens up into separate balls
+// The two things that make that style read, and why the old shell crowns could
+// not:
+//   * the silhouette is made of leaf tips — scalloped and soft — not a lathe
+//     surface with a texture wrapped on it, which reads as a balloon
+//   * the normals are AUTHORED, half from the lump and half from the crown's
+//     own ellipsoid. So the whole crown turns through one big terminator while
+//     every lump still has its own lit cap and shadowed underside. That nested
+//     light split is most of what people recognise as "the Genshin tree".
+// Rules that keep it legible:
+//   * lumps overlap — their radius is locked to the crown radius
+//   * one tint per TREE, not per lump, so a crown reads as a single mass
+//   * interior / underside cards are darkened in the vertex colour (baked AO),
+//     which gives the crown depth without any extra lights
 //
 // Trunks are unchanged: thick noise-displaced cylinders with a root flare.
-// Five species:
+// Species:
 //   pagoda     — 小叶榄仁, the signature valley tree: pale straight trunk,
 //                broad flat umbrella crown
-//   pine       — mid-ground conifer, full cone from near the ground
-//   high pine  — bare lower trunk with dead sticks, rounded crown held high
+//   high pine  — the tallest broad crown, foliage most of the way down
 //   ginkgo     — pale bent trunks by the banks, golden domes
-//   spruce     — darkest, tallest cones filling the background slopes
+//   maples     — red and orange autumn accents
+//   deep       — deep-green broadleaf filling the background slopes
+// The cone conifers (pine, spruce) were removed: as clump crowns they read as
+// tall poles studded with floating tufts.
 // Everything is InstancedMesh — 2-4 draw calls per species.
 //
 // Trees are built one cell at a time as the camera moves, in TWO tiers with
 // DISJOINT species sets:
 //
-//   near (pagoda, high pine, ginkgo) — the close-range species, 260 units
-//   far  (pine, spruce)              — the background species, out to the horizon
+//   near (pagoda, high pine, ginkgo, maples) — the close-range species, 260 units
+//   far  (deep)                              — the background species, out to the horizon
 //
 // Disjointness is the whole reason this is safe. The obvious split — "near tier
 // draws everything, far tier draws the cheap subset" — makes both tiers place the
@@ -49,17 +50,15 @@ import { makeCanopyTexture, makeBarkTexture } from './textures.js';
 //
 // The cost of a finite radius is that pagodas/ginkgos fade in at 260 units. They
 // are held to within 45-110 units of the STREAM by their own minD/maxD, so they
-// were never a horizon feature; the horizon is pine and spruce, which is what the
-// far tier carries.
+// were never a horizon feature; the horizon is the deep broadleaf, which is what
+// the far tier carries.
 export function createTrees(scene) {
   const pagodaBark = makeBarkTexture({ base: '#aaa294', crack: 'rgba(48,42,34,1)', ridge: 'rgba(222,214,198,1)', knots: false });
   // Bark bases lifted a stop and warmed. A trunk stands under its own crown, so
   // it is nearly always on the shadow side of the terminator; at the old values
   // (#4f4338 / #453a32) every trunk in the frame collapsed into a black
   // silhouette and the forest read as bars rather than as wood.
-  const pineBark = makeBarkTexture({ base: '#9c7f65', crack: 'rgba(56,44,32,1)', ridge: 'rgba(186,164,134,1)' });
   const highBark = makeBarkTexture({ base: '#a3856a', crack: 'rgba(58,44,30,1)', ridge: 'rgba(198,168,130,1)', knots: false });
-  const spruceBark = makeBarkTexture({ base: '#8e7561', crack: 'rgba(48,36,26,1)', ridge: 'rgba(172,148,120,1)' });
   // ginkgo bark: grey-brown furrowed wood
   const ginkgoBark = makeBarkTexture({ base: '#b09678', crack: 'rgba(52,40,28,1)', ridge: 'rgba(208,188,158,1)', knots: false });
   // maple bark: greyer and slightly cooler than the conifers, so a red crown does
@@ -67,10 +66,9 @@ export function createTrees(scene) {
   const mapleBark = makeBarkTexture({ base: '#9a8b7d', crack: 'rgba(46,38,32,1)', ridge: 'rgba(200,188,172,1)' });
   const deepBark = makeBarkTexture({ base: '#8d7660', crack: 'rgba(46,36,26,1)', ridge: 'rgba(176,154,126,1)' });
 
-  // One canopy texture per palette, shared by every tree of that species.
-  // Openwork crowns: leaves drawn on a transparent ground, so the gaps between
-  // leaf clumps are real holes and the sky reads through the canopy. See
-  // makeCanopyTexture — the shell geometry still owns the silhouette.
+  // One leaf-clump texture per palette, shared by every tree of that species.
+  // Each is a single round tuft of leaves; the crown is built from a few hundred
+  // camera-facing cards carrying it (see makeClumpCrownGeo).
   // Lighter and warmer than the old noon greens. Under a low gold sun a deep
   // blue-green crown just goes black on the shadow side, and the frame fills with
   // dark holes; these sit high enough in value that the sky fill can still lift
@@ -81,27 +79,24 @@ export function createTrees(scene) {
   // became one dark mass. In the reference the crowns are BRIGHT and their
   // internal range is narrow — the volume comes from the lighting split between
   // one crown's lit and shadow faces, not from dark leaves inside the texture.
-  const PIERCE = { pierce: true };
   // Hues pulled back toward true green. The previous set sat around 80-90 degrees
   // — yellow-green — which under a warm sun left the whole canopy the same family
   // as the gold ginkgos, so nothing in the frame read as green and the golds
   // stopped being accents. These sit nearer 100 degrees and keep the value lift.
-  const pineTex = makeCanopyTexture(['#5c8f45', '#6ea451', '#86bc63'], PIERCE);
-  const highTex = makeCanopyTexture(['#67974a', '#7cad58', '#94c56b'], PIERCE);
-  const darkTex = makeCanopyTexture(['#4d8043', '#63954f', '#7bad60'], PIERCE);
+  const highTex = makeLeafClumpTexture(['#5c9246', '#73aa56', '#90c46a'], { leaf: 'needle' });
   // Ginkgo now draws real fan leaves rather than the generic pointed oval — the
   // one leaf shape distinctive enough to be worth recognising at close range.
-  const ginkgoTex = makeCanopyTexture(['#d9a72c', '#eec244', '#fbdb6d'], { pierce: true, leaf: 'fan' });
-  const pagodaTex = makeCanopyTexture(['#61964a', '#77ac58', '#8fc46a'], PIERCE);
+  const ginkgoTex = makeLeafClumpTexture(['#d9a72c', '#eec244', '#fbdb6d'], { leaf: 'fan' });
+  const pagodaTex = makeLeafClumpTexture(['#61964a', '#77ac58', '#8fc46a']);
   // ---- the autumn accents ----
   // Two new palettes, both on five-lobed maple leaves. Scarlet is the loud one and
   // is kept rare; amber sits between the scarlet and the golds so the warm end of
   // the frame has a middle step instead of jumping from gold straight to red.
-  const mapleRedTex = makeCanopyTexture(['#a8321f', '#c8492a', '#e06a3c'], { pierce: true, leaf: 'maple' });
-  const mapleOrangeTex = makeCanopyTexture(['#c26a18', '#dd8a26', '#efab45'], { pierce: true, leaf: 'maple' });
+  const mapleRedTex = makeLeafClumpTexture(['#a8321f', '#c8492a', '#e06a3c'], { leaf: 'maple' });
+  const mapleOrangeTex = makeLeafClumpTexture(['#c26a18', '#dd8a26', '#efab45'], { leaf: 'maple' });
   // A deep-green broadleaf. Not an accent — this is the anchor that keeps the
   // canopy from turning into all-autumn once the warm species are in.
-  const deepTex = makeCanopyTexture(['#2f6136', '#3d7844', '#519055'], PIERCE);
+  const deepTex = makeLeafClumpTexture(['#2f6136', '#3d7844', '#519055']);
 
   // Every species' shared assets, built ONCE here rather than per cell: the trunk
   // profile, the three crown lathe variants, and the materials. A cell only ever
@@ -134,28 +129,17 @@ export function createTrees(scene) {
       },
     },
 
-    // ---- pine — mid-ground conifer, full cone from near the ground ----
-    pine: {
-      density: 0.00145, minD: 16, maxD: 130, sRange: [0.85, 1.4],
-      trunk: { topR: 0.11, botR: 0.4, h: 12, flare: 3.2 },
-      bark: pineBark,
-      tex: pineTex,
-      crown: {
-        crownBase: 2.0, crownTop: 13.4, radius: 2.7,
-        profile: 'cone',
-        hue: 0.29, sat: 0.24, light: 0.88,
-      },
-    },
-
-    // ---- high pine — bare mossy trunk, crown held high, dead sticks ----
+    // ---- high pine — tall, with foliage running most of the way down ----
+    // The crown used to start 40% up a bare trunk hung with dead sticks. With
+    // the clump crowns that read as a pole with a few puffs at the top, so the
+    // crown now starts low and the sticks (hidden inside it anyway) are gone.
     high: {
       density: 0.00094, minD: 20, maxD: 110, sRange: [0.9, 1.4],
-      sticks: true,
       trunk: { topR: 0.09, botR: 0.34, h: 14.5, flare: 2.8 },
       bark: highBark,
       tex: highTex,
       crown: {
-        crownBase: 5.6, crownTop: 15.8, radius: 2.9,
+        crownBase: 2.6, crownTop: 15.8, radius: 2.9,
         profile: 'dome',
         hue: 0.28, sat: 0.22, light: 0.92,
       },
@@ -218,11 +202,13 @@ export function createTrees(scene) {
     },
 
     // ---- deep green broadleaf — the anchor for the warm species above ----
-    // Runs in the FAR tier with the conifers: its job is to hold the slopes green
+    // Runs in the FAR tier: its job is to hold the slopes green
     // behind the accents, which is a background job, and the far tier is where the
     // background species live.
+    // Density raised from 0.0012 to take over the slopes the pines and spruces
+    // used to fill, and minD pulled in to where the pines started.
     deep: {
-      density: 0.00120, minD: 40, maxD: 135, sRange: [0.8, 1.35],
+      density: 0.0030, minD: 24, maxD: 140, sRange: [0.8, 1.35],
       trunk: { topR: 0.12, botR: 0.42, h: 12.4, flare: 3.0 },
       bark: deepBark,
       tex: deepTex,
@@ -235,31 +221,17 @@ export function createTrees(scene) {
       },
     },
 
-    // ---- spruce — darkest, tallest cones on the background slopes ----
-    spruce: {
-      density: 0.00239, minD: 48, maxD: 140, sRange: [0.7, 1.45],
-      trunk: { topR: 0.08, botR: 0.46, h: 17, flare: 2.8 },
-      bark: spruceBark,
-      tex: darkTex,
-      crown: {
-        crownBase: 1.8, crownTop: 18.4, radius: 2.8,
-        profile: 'cone',
-        // The background species, so it stays the coolest and slightly the deepest of
-        // the five — but only slightly. This is the one that used to turn the far
-        // slopes into a black wall.
-        hue: 0.31, sat: 0.24, light: 0.84,
-      },
-    },
   };
 
   // Resolve each species' shared geometry and materials once.
   for (const s of Object.values(SPECIES)) {
+    // The trunk stops two-thirds of the way up the crown. Run to the crown top,
+    // it showed through every gap between the leaf clumps as a long dark pole,
+    // which is what made the tall species read as sticks with tufts on them.
+    const c = s.crown;
+    s.trunk.h = Math.min(s.trunk.h, c.crownBase + 0.65 * (c.crownTop - c.crownBase));
     s.trunkGeo = makeTrunkGeo(s.trunk);
     s.trunkMat = new THREE.MeshStandardMaterial({ map: s.bark, roughness: 0.95, metalness: 0 });
-    if (s.sticks) {
-      s.stickGeo = makeStickGeo();
-      s.stickMat = new THREE.MeshStandardMaterial({ map: s.bark, roughness: 1, metalness: 0 });
-    }
     Object.assign(s, makeCanopyAssets(s.tex, s.crown));
   }
 
@@ -267,11 +239,10 @@ export function createTrees(scene) {
   // close-range accents so they join the near tier; `deep` is a background filler
   // so it joins the far one. No species appears in both.
   const NEAR = ['pagoda', 'high', 'ginkgo', 'mapleRed', 'mapleOrange'];
-  const FAR = ['pine', 'spruce', 'deep'];
+  const FAR = ['deep'];
   const materials = [];
   for (const s of Object.values(SPECIES)) {
     materials.push(s.trunkMat, s.canopyMat);
-    if (s.stickMat) materials.push(s.stickMat);
   }
 
   return {
@@ -301,7 +272,6 @@ function makeTreeLayer(scene, SPECIES, names, id) {
           const trees = placeInCell(s, cell);
           if (!trees.length) return;
           addTrunks(scene, meshes, trees, s);
-          if (s.sticks) addDeadSticks(scene, meshes, trees, s);
           addCanopy(scene, meshes, trees, s);
         });
       }
@@ -422,7 +392,11 @@ function makeTrunkGeo({ topR, botR, h, flare = 3.5, bend = 0 }) {
 function addTrunks(scene, out, trees, s) {
   const mesh = new THREE.InstancedMesh(s.trunkGeo, s.trunkMat, trees.length);
   mesh.castShadow = true;
-  mesh.receiveShadow = true;
+  // Trunks do not take the canopy's cast shadow. The leafy crowns now block
+  // nearly all the sun, so every trunk sat in shadow and the forest turned into
+  // black bars; stylised forests keep the wood readable, lit on the sun side
+  // and cool on the other by the cel shader alone.
+  mesh.receiveShadow = false;
   const dummy = new THREE.Object3D();
   trees.forEach((tr, i) => {
     dummy.position.set(tr.x, terrainHeight(tr.x, tr.z) - 0.25, tr.z);
@@ -431,40 +405,6 @@ function addTrunks(scene, out, trees, s) {
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
   });
-  mesh.instanceMatrix.needsUpdate = true;
-  mesh.computeBoundingSphere();
-  scene.add(mesh);
-  out.push(mesh);
-}
-
-// The dead-stick stub, shared by every high pine.
-function makeStickGeo() {
-  const geo = new THREE.CylinderGeometry(0.015, 0.055, 2.4, 5, 1);
-  geo.translate(0, 1.2, 0);
-  return geo;
-}
-
-// Short dead branch stubs angling down off the bare lower trunks.
-function addDeadSticks(scene, out, trees, s) {
-  const PER = 7;
-  const mesh = new THREE.InstancedMesh(s.stickGeo, s.stickMat, trees.length * PER);
-  mesh.castShadow = true;
-  const dummy = new THREE.Object3D();
-  let m = 0;
-  for (const tr of trees) {
-    const yBase = terrainHeight(tr.x, tr.z);
-    for (let i = 0; i < PER; i++) {
-      const h = (2 + Math.random() * 4.8) * tr.s;
-      const a = Math.random() * Math.PI * 2;
-      const rad = (0.55 - (h / (14.5 * tr.s)) * 0.4) * tr.s * 0.8;
-      dummy.position.set(tr.x + Math.cos(a) * rad, yBase + h, tr.z + Math.sin(a) * rad);
-      dummy.rotation.set((Math.random() - 0.5) * 0.4, -a, -(Math.PI / 2 - 0.35 - Math.random() * 0.5));
-      const k = (0.5 + Math.random() * 0.6) * tr.s;
-      dummy.scale.set(k, k, k);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(m++, dummy.matrix);
-    }
-  }
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
   scene.add(mesh);
@@ -480,98 +420,204 @@ const smoothstep = (e0, e1, x) => {
   return t * t * (3 - 2 * t);
 };
 const CROWN_PROFILES = {
-  // conifer: flares out just above the base, then tapers all the way to a point
-  cone: (t) => Math.pow(1 - t, 0.85) * smoothstep(0, 0.16, t),
   // broadleaf: a ball — pinched where it meets the trunk, generous over the top
   dome: (t) => Math.pow(Math.sin(Math.PI * Math.pow(t, 0.82)), 0.8),
   // pagoda: a wide flat plate that reaches full width low and holds it
   umbrella: (t) => Math.pow(Math.sin(Math.PI * Math.pow(t, 0.55)), 0.55),
 };
 
-// One closed crown shell, as a lathe of the species' profile curve.
+// One crown, as lumps of camera-facing leaf cards. Built in crown-local units
+// (base at y=0, the species' own radius and height) so a tree is placed with a
+// UNIFORM scale — a billboard under a non-uniform instance scale would smear.
 //
-// The obvious way to build a solid crown is to pile up spheroids, and it does not
-// work: a blob big enough to matter is also big enough to READ, so the crown
-// turns into a knot of bulbous lobes — cauliflower, not foliage. The silhouette
-// has to come from a single surface instead, with the noise kept small and
-// high-frequency so it only ruffles the edge rather than growing lumps out of it.
-//
-// The lathe is 1 unit tall with radius 1, so the caller scales it by (R, H, R).
-// Lathe uvs run u around the axis and v up it, which is exactly what the
-// seamless-in-u canopy texture wants.
-function makeCrownGeo(profileName) {
-  const profile = CROWN_PROFILES[profileName];
-  const STEPS = 17, SEGS = 22;
-  const pts = [];
-  for (let i = 0; i <= STEPS; i++) {
-    const t = i / STEPS;
-    pts.push(new THREE.Vector2(Math.max(profile(t), 1e-4), t));
-  }
-  const g = new THREE.LatheGeometry(pts, SEGS);
+// Lumps are scattered over the profile surface weighted by its radius, so wide
+// bands get more lumps than the narrow tip.
+function makeClumpCrownGeo(p) {
+  const profile = CROWN_PROFILES[p.profile];
+  const R = p.radius, H = p.crownTop - p.crownBase;
+  const cy = H * 0.55;
+  const lumps = [];
 
-  // Barely ruffle the surface: two high-frequency octaves at ~3% of the radius.
-  // The shape must still read as the primitive it is — a cone is a cone. This is
-  // only here so the edge is not perfectly machined; push it past ~0.06 and the
-  // lobes start growing back.
-  const pos = g.attributes.position;
-  const v = new THREE.Vector3();
-  const phase = Math.random() * 10;
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const a = Math.atan2(v.z, v.x);
-    const n = Math.sin(a * 6 + v.y * 9 + phase) * 0.6 + Math.sin(a * 11 - v.y * 13 + phase * 2.3) * 0.4;
-    const f = 1 + n * 0.032;
-    pos.setXYZ(i, v.x * f, v.y, v.z * f);
+  // inverse CDF of the profile radius over height
+  const STEPS = 64;
+  const cdf = [0];
+  for (let i = 1; i <= STEPS; i++) cdf.push(cdf[i - 1] + profile(i / STEPS));
+  const umbrella = p.profile === 'umbrella';
+  // Lump count grows with how TALL the crown is for its width. A fixed 13 was
+  // tuned on round crowns; stretched over a tall narrow one it left gaps
+  // between the lumps and the crown read as a few puffs strung up the trunk.
+  const n = Math.round((umbrella ? 16 : 13) * Math.max(1, H / R / 2.7));
+  const lr = R * (umbrella ? 0.46 : 0.44);
+  for (let k = 0; k < n; k++) {
+    const target = ((k + 0.5) / n) * cdf[STEPS];
+    let i = 1;
+    while (cdf[i] < target) i++;
+    const t = THREE.MathUtils.clamp(i / STEPS, 0.14, 0.9);
+    const ring = profile(t) * R * 0.66;
+    const a = k * 2.39996 + Math.random() * 0.5;
+    lumps.push({ x: Math.cos(a) * ring, y: t * H, z: Math.sin(a) * ring, r: lr * (0.85 + Math.random() * 0.3), sy: umbrella ? 0.7 : 0.9 });
   }
-  pos.needsUpdate = true;
-  g.computeVertexNormals();
+  // a cap over the top
+  lumps.push({ x: 0, y: H * 0.86, z: 0, r: lr * 0.95, sy: 0.8 });
+  // A core so the gaps between lumps show leaves, not the bare trunk. Tall
+  // crowns get a column of them, one per crown-width of height.
+  const cores = Math.max(1, Math.round(H / (R * 1.6)));
+  for (let k = 0; k < cores; k++) {
+    const y = cores === 1 ? cy : H * (0.22 + 0.6 * (k / (cores - 1)));
+    lumps.push({ x: 0, y, z: 0, r: R * 0.55, sy: 0.8, core: true });
+  }
+
+  const pos = [], nrm = [], col = [], uvs = [], card = [], idx = [];
+  const c = new THREE.Vector3(), v = new THREE.Vector3(), d = new THREE.Vector3();
+  const out = new THREE.Vector3(), n1 = new THREE.Vector3(), n2 = new THREE.Vector3();
+  const CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  let maxHalf = 0;
+
+  for (const L of lumps) {
+    c.set(L.x, L.y, L.z);
+    out.set(L.x, (L.y - cy) * 0.6, L.z);
+    if (out.lengthSq() < 1e-4) out.set(0, 1, 0);
+    out.normalize();
+    const M = L.core ? 14 : Math.max(7, Math.round(16 * (L.r / (R * 0.44)) ** 2));
+    for (let m = 0; m < M; m++) {
+      d.randomDirection();
+      // cards crowd the lump's outer face — the inner face is hidden anyway
+      if (!L.core) d.addScaledVector(out, 0.9).normalize();
+      const rr = L.r * (0.45 + Math.random() * 0.45);
+      v.set(L.x + d.x * rr, L.y + d.y * rr * L.sy, L.z + d.z * rr);
+      const half = L.r * (0.4 + Math.random() * 0.22);
+      maxHalf = Math.max(maxHalf, half);
+
+      // crown-ellipsoid normal; its length doubles as "how far out" for the AO
+      n2.set(v.x / R, (v.y - cy) / (H * 0.5), v.z / R);
+      const q = n2.length();
+      n2.normalize();
+      if (L.core) n1.copy(n2);
+      else n1.subVectors(v, c).normalize().add(n2).multiplyScalar(0.5);
+      n1.y += 0.2;
+      n1.normalize();
+
+      let ao = (0.42 + 0.58 * smoothstep(0.25, 0.95, q)) * (0.64 + 0.36 * THREE.MathUtils.clamp(v.y / H, 0, 1));
+      if (d.dot(out) < 0) ao *= 0.85;
+      if (L.core) ao *= 0.7;
+      const rot = Math.random() * Math.PI * 2;
+
+      const base = pos.length / 3;
+      for (const [cx, cz] of CORNERS) {
+        pos.push(v.x, v.y, v.z);
+        nrm.push(n1.x, n1.y, n1.z);
+        col.push(ao, ao, ao);
+        uvs.push((cx + 1) / 2, (cz + 1) / 2);
+        card.push(cx, cz, half, rot);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setAttribute('aCard', new THREE.Float32BufferAttribute(card, 4));
+  g.setIndex(idx);
+  // positions are card CENTRES; the cards reach maxHalf past them, and culling
+  // must know that or crowns pop out at the screen edge
+  g.computeBoundingSphere();
+  g.boundingSphere.radius += maxHalf;
   return g;
 }
 
-// The crown shells and materials for one species, built once and shared by every
-// cell. Three shape variants, dealt out round-robin, so neighbouring trees are
-// not clones.
+// Turn each card (four vertices sharing one centre) into a quad facing the
+// current camera. Done in LOCAL space, before the instance transform, so
+// everything downstream — world position, shadow lookup, wind — sees the real
+// corner. In the shadow pass viewMatrix is the sun's, so the cards turn to face
+// the light and cast a full leafy shadow.
+function applyBillboard(material) {
+  const prev = material.onBeforeCompile;
+  const prevKey = material.customProgramCacheKey;
+  material.onBeforeCompile = function (shader, renderer) {
+    if (prev) prev.call(this, shader, renderer);
+    shader.vertexShader = 'attribute vec4 aCard;\nvarying vec2 vCorner;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       {
+         float cr = cos(aCard.w), sr = sin(aCard.w);
+         vCorner = vec2(aCard.x * cr - aCard.y * sr, aCard.x * sr + aCard.y * cr);
+         vec2 cc = vCorner * aCard.z;
+         vec3 camR = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+         vec3 camU = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+         mat3 im = mat3(instanceMatrix);
+         // transpose(im) is scale * R^T; dividing the scale back out leaves the
+         // world offset rotated into the instance's frame
+         transformed += transpose(im) * (camR * cc.x + camU * cc.y) / length(im[0]);
+       }`
+    );
+    // Bulge each card's normal like a little sphere. A flat card shades as one
+    // tone, so overlapping cards read as a stack of coins; bent toward its own
+    // rim it rounds off and melts into its neighbours. The card faces the camera,
+    // so its corner offset is already a view-space direction.
+    shader.fragmentShader = 'varying vec2 vCorner;\n' + shader.fragmentShader.replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+       normal = normalize(normal + vec3(vCorner * 0.55, 0.0));`
+    ).replace(
+      // Mip coverage fix. Averaging alpha down the mip chain drops thin leaf and
+      // needle strokes under the alphaTest threshold, so distant crowns thin
+      // out and needle crowns turn to specks. Scaling alpha up with the mip level
+      // keeps the coverage roughly constant at every distance.
+      '#include <map_fragment>',
+      `#include <map_fragment>
+       {
+         vec2 tx = vMapUv * vec2(textureSize(map, 0));
+         vec2 ddx = dFdx(tx), ddy = dFdy(tx);
+         float lod = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy))));
+         diffuseColor.a *= 1.0 + lod * 0.3;
+       }`
+    );
+  };
+  material.customProgramCacheKey = function () {
+    return (prevKey ? prevKey.call(this) : '') + '-billboard';
+  };
+  return material;
+}
+
+// The crown variants and materials for one species, built once and shared by
+// every cell. Three variants, dealt out round-robin, so neighbours are not clones.
 function makeCanopyAssets(tex, p) {
-  const variants = [makeCrownGeo(p.profile), makeCrownGeo(p.profile), makeCrownGeo(p.profile)];
-  // Openwork, so alphaTest + DoubleSide: without the back faces you see straight
-  // through the holes to nothing and the crown reads as an empty husk; with them
-  // the shell's far wall shows through its own gaps, which is what gives the mass
-  // depth. keepAuthoredNormals stops three.js flipping the normal on those back
-  // faces and turning them black.
-  // alphaTest is low on purpose. At 0.42 it cut every partly-covered texel — the
-  // soft edge of each painted leaf — so crown surfaces came out mottled like
-  // lichen and the silhouette shed loose specks. At 0.12 only the genuinely empty
-  // ground between clusters is discarded, which is the openwork the shell wants,
-  // and the leaf edges stay whole.
+  const variants = [makeClumpCrownGeo(p), makeClumpCrownGeo(p), makeClumpCrownGeo(p)];
+  // alphaTest 0.5 for a crisp painted leaf edge. The clump texture has an opaque
+  // core, so the cut only ever bites the leaf tips at the rim.
   const mat = new THREE.MeshStandardMaterial({
-    map: tex,
-    alphaTest: 0.12,
+    map: tex.map,
+    alphaMap: tex.alphaMap,
+    vertexColors: true,
+    alphaTest: 0.5,
     side: THREE.DoubleSide,
     roughness: 0.95,
     metalness: 0,
   });
   applyCanopyWind(mat, { strength: 0.13, freq: 1.1 });
   keepAuthoredNormals(mat);
+  applyBillboard(mat);
   // toonify() gives leaf surfaces a translucency floor so the crown's unlit
   // inner wall glows rather than going black; nothing else in the scene wants it.
   mat.userData.canopy = true;
-  // Shadows must respect the holes too, or an openwork crown casts a solid
-  // ellipse on the ground and gives the whole trick away.
+  // Shadows must use the same cards and the same alpha cut, or the crown casts a
+  // solid blot that disagrees with the leaves above it.
   const depthMat = new THREE.MeshDepthMaterial({
     depthPacking: THREE.RGBADepthPacking,
-    map: tex,
-    // must match the colour material's threshold, or the shadow disagrees with
-    // the crown that casts it
-    alphaTest: 0.12,
+    map: tex.map,
+    alphaMap: tex.alphaMap,
+    alphaTest: 0.5,
   });
+  applyBillboard(depthMat);
 
   return { crownVariants: variants, canopyMat: mat, canopyDepthMat: depthMat };
 }
 
-// One cell's crowns: one InstancedMesh per shape variant. The old version
-// bucketed instances into a 3x3 grid over the whole field so that a field-wide
-// mesh could still be frustum culled; the cell now IS the cull unit, so the
-// bucketing is gone and each variant is a single mesh per cell.
+// One cell's crowns: one InstancedMesh per shape variant. The cell is the cull
+// unit, so each variant is a single mesh per cell.
 function addCanopy(scene, out, trees, s) {
   const p = s.crown;
   const variants = s.crownVariants;
@@ -585,8 +631,9 @@ function addCanopy(scene, out, trees, s) {
     const yBase = terrainHeight(tr.x, tr.z);
     dummy.position.set(tr.x, yBase + p.crownBase * tr.s, tr.z);
     dummy.rotation.set(0, tr.rot + Math.random() * Math.PI * 2, 0);
-    const R = p.radius * tr.s * (0.88 + Math.random() * 0.24);
-    dummy.scale.set(R, (p.crownTop - p.crownBase) * tr.s * (0.9 + Math.random() * 0.2), R);
+    // uniform: the cards are billboards, and a squashed instance would squash them
+    const k = tr.s * (0.9 + Math.random() * 0.2);
+    dummy.scale.set(k, k, k);
     dummy.updateMatrix();
     g.mats.push(dummy.matrix.clone());
     // one tint per tree — a crown has to read as a single object, so the colour
@@ -614,7 +661,11 @@ function addCanopy(scene, out, trees, s) {
     if (!mats.length) return;
     const mesh = new THREE.InstancedMesh(geo, s.canopyMat, mats.length);
     mesh.castShadow = true;
-    mesh.receiveShadow = true;
+    // Crowns cast but do not receive. The shadow map holds the cards turned to
+    // the SUN, the frame shows them turned to the CAMERA, so the lookup slices
+    // straight diagonal shadow bands across the leaves. The crown's depth comes
+    // from its authored normals and baked AO instead, as in the reference games.
+    mesh.receiveShadow = false;
     mesh.customDepthMaterial = s.canopyDepthMat;
     for (let k = 0; k < mats.length; k++) {
       mesh.setMatrixAt(k, mats[k]);

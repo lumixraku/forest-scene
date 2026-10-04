@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { applyWind, keepAuthoredNormals } from './wind.js';
+import { applyGrassWind, keepAuthoredNormals } from './wind.js';
+import { meadowColor, GRASS_ROOT } from './ground.js';
 import { terrainHeight } from './terrain.js';
 import { streamAt, levelAt, halfWidthAt, inWater } from './streamPath.js';
 
 // Dense instanced grass — the single biggest realism ingredient. Each instance
 // is a small tuft of tapered blades; a brightness gradient is baked into the
-// blade vertices (dark base -> light tip) and per-instance colors vary the
-// hue between deep green and sunlit yellow-green. Normals are forced upward
+// blade vertices (dark base -> light tip) and per-instance colors follow the
+// ground's own colour field (meadowColor in ground.js). Normals are forced upward
 // so the meadow shades like a continuous sunlit surface instead of a mass of
 // dark random facets.
 //
@@ -24,6 +25,10 @@ import { streamAt, levelAt, halfWidthAt, inWater } from './streamPath.js';
 // rather than the total is what makes the meadow underfoot identical whether the
 // world is 300m or unbounded.
 const ATTEMPTS_PER_M2 = 1.6535;
+// Tufts per accepted sample. The original meadow was ~4 blades/m², so the soil
+// showed through everywhere and the grass read as scattered spikes; doubled, and
+// with more blades per tuft, it closes into a lawn.
+const TUFTS_PER_SAMPLE = 2;
 
 export function createGrass(scene, { radius }) {
   const geo = buildTuftGeometry();
@@ -34,13 +39,11 @@ export function createGrass(scene, { radius }) {
     metalness: 0.0,
     side: THREE.DoubleSide,
   });
-  applyWind(mat, { strength: 0.1, freq: 1.9, heightFactor: 0.8 });
+  applyGrassWind(mat, { strength: 0.16 });
   keepAuthoredNormals(mat);
 
   const dummy = new THREE.Object3D();
   const col = new THREE.Color();
-  const deep = new THREE.Color('#48661f');
-  const sunlit = new THREE.Color('#9cb149');
 
   // Every built cell, for the distance-based thinning below.
   const cells = [];
@@ -66,21 +69,25 @@ export function createGrass(scene, { radius }) {
       if (h < levelAt(t) + 0.25) continue; // not in the water — grass runs right up to the edge
       if (inWater(x, z, 0.1)) continue;
 
-      // shorter tufts near the water's edge; tight scale range keeps the lawn
-      // even, like it's been trimmed
-      const s = (0.6 + Math.random() * 0.2) * (0.8 + 0.2 * THREE.MathUtils.smoothstep(bankD, 0, 8));
-      dummy.position.set(x, h - 0.05, z);
-      dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
-      dummy.scale.set(s, s * (0.9 + Math.random() * 0.2), s);
-      dummy.updateMatrix();
+      for (let k = 0; k < TUFTS_PER_SAMPLE; k++) {
+        const tx = x + (k ? (Math.random() - 0.5) * 0.9 : 0);
+        const tz = z + (k ? (Math.random() - 0.5) * 0.9 : 0);
+        // shorter tufts near the water's edge; tight scale range keeps the lawn
+        // even, like it's been trimmed
+        const s = (0.72 + Math.random() * 0.3) * (0.75 + 0.25 * THREE.MathUtils.smoothstep(bankD, 0, 8));
+        dummy.position.set(tx, (k ? terrainHeight(tx, tz) : h) - 0.05, tz);
+        dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+        dummy.scale.set(s, s * (0.85 + Math.random() * 0.3), s);
+        dummy.updateMatrix();
 
-      // sunnier (yellower) tufts on open slopes, deeper green near the water
-      const sunK = THREE.MathUtils.clamp(sd / 45, 0, 1) * 0.5 + Math.random() * 0.5;
-      col.copy(deep).lerp(sunlit, sunK);
-      col.offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.06);
+        // the ground's own colour field, so the roots match the soil between them;
+        // only a whisper of per-tuft jitter, or the lawn turns to salt and pepper
+        meadowColor(tx, tz, col);
+        col.offsetHSL((Math.random() - 0.5) * 0.015, 0, (Math.random() - 0.5) * 0.05);
 
-      mats.push(dummy.matrix.clone());
-      cols.push(col.clone());
+        mats.push(dummy.matrix.clone());
+        cols.push(col.clone());
+      }
     }
 
     if (!mats.length) return null;
@@ -115,8 +122,9 @@ export function createGrass(scene, { radius }) {
     if (i >= 0) cells.splice(i, 1);
   }
 
-  // distance-based density: full within 60m of the camera, fading to 15%
-  // far out where a tuft is subpixel anyway. Re-evaluated only after the
+  // distance-based density: full within 45m of the camera, fading to 12%
+  // far out where a tuft is subpixel anyway. Tighter than it was because each
+  // tuft now carries twice the blades. Re-evaluated only after the
   // camera has actually moved.
   const lastCam = new THREE.Vector2(Infinity, Infinity);
   const camXZ = new THREE.Vector2();
@@ -132,22 +140,22 @@ export function createGrass(scene, { radius }) {
       lastCam.copy(camXZ);
       for (const c of cells) {
         const dist = c.centre.distanceTo(camXZ);
-        const f = THREE.MathUtils.clamp(1 - (dist - 60) / 130, 0.15, 1);
+        const f = THREE.MathUtils.clamp(1 - (dist - 45) / 110, 0.12, 1);
         c.mesh.count = Math.ceil(c.full * f);
       }
     },
   };
 }
 
-// One tuft = 6 tapered two-segment blades leaning outward.
+// One tuft = 8 slender curved blades fanning out from a small footprint.
 function buildTuftGeometry() {
   const blades = [];
-  const BLADES = 6;
+  const BLADES = 8;
   for (let i = 0; i < BLADES; i++) {
-    const ang = (i / BLADES) * Math.PI * 2 + Math.random() * 0.9;
-    const lean = 0.1 + Math.random() * 0.16;
-    const height = 0.38 + Math.random() * 0.18;
-    blades.push(buildBlade(ang, lean, height, Math.random() * 0.22));
+    const ang = (i / BLADES) * Math.PI * 2 + Math.random() * 0.8;
+    const lean = 0.18 + Math.random() * 0.3;
+    const height = 0.34 + Math.random() * 0.36;
+    blades.push(buildBlade(ang, lean, height, Math.random() * 0.24));
   }
   const geo = mergeGeometries(blades, false);
 
@@ -158,31 +166,35 @@ function buildTuftGeometry() {
   return geo;
 }
 
+// Three segments on a quadratic arc, so the blade curves over instead of
+// kinking once. Width tapers to a point.
 function buildBlade(ang, lean, height, baseOff) {
-  const wBase = 0.09, wMid = 0.055;
+  const wBase = 0.05;
   const dx = Math.cos(ang), dz = Math.sin(ang);
   const px = -dz, pz = dx; // perpendicular for blade width
-
   const ox = dx * baseOff, oz = dz * baseOff;
-  const bend1 = lean * height * 0.45;
-  const bend2 = lean * height;
 
-  const p = [
-    // base pair
-    ox - px * wBase, 0, oz - pz * wBase,
-    ox + px * wBase, 0, oz + pz * wBase,
-    // mid pair
-    ox + dx * bend1 - px * wMid, height * 0.55, oz + dz * bend1 - pz * wMid,
-    ox + dx * bend1 + px * wMid, height * 0.55, oz + dz * bend1 + pz * wMid,
-    // tip
-    ox + dx * bend2, height, oz + dz * bend2,
-  ];
-  const idx = [0, 1, 2, 2, 1, 3, 2, 3, 4];
-
-  // brightness gradient baked per vertex: dark roots, light tips
-  const shade = [0.42, 0.42, 0.78, 0.78, 1.0];
+  const p = [];
   const cols = [];
-  for (const s of shade) cols.push(s, s, s);
+  const SEG = 3;
+  for (let k = 0; k <= SEG; k++) {
+    const t = k / SEG;
+    const out = lean * height * t * t * 1.4;
+    const y = height * (t - lean * 0.35 * t * t);
+    const w = wBase * (1 - t);
+    const cx = ox + dx * out, cz = oz + dz * out;
+    if (k < SEG) p.push(cx - px * w, y, cz - pz * w, cx + px * w, y, cz + pz * w);
+    else p.push(cx, y, cz);
+    // Root-to-tip colour multiplier. The root matches the ground exactly (see
+    // GRASS_ROOT in ground.js); the tip goes lighter AND warmer — sun through a
+    // thin blade turns it yellow, which is what gives a meadow its glow.
+    const r = THREE.MathUtils.lerp(GRASS_ROOT, 1.32, t);
+    const g = THREE.MathUtils.lerp(GRASS_ROOT, 1.22, t);
+    const b = THREE.MathUtils.lerp(GRASS_ROOT, 0.8, t);
+    cols.push(r, g, b);
+    if (k < SEG) cols.push(r, g, b);
+  }
+  const idx = [0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5, 4, 5, 6];
 
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));

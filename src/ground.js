@@ -13,8 +13,35 @@ import { CELL } from './streaming.js';
 // ~870k triangles; instead the segment count drops by distance ring, so the far
 // tiles are cheap while the ground underfoot keeps every fold it had.
 
-const grassDark = new THREE.Color('#67793a');
-const grassLight = new THREE.Color('#93a44c');
+// The meadow's colour field, shared with grass.js. Each grass tuft takes its root
+// colour from the ground under it, so the soil showing between blades reads as
+// more grass rather than as a dark sheet behind it — the trick that makes BotW /
+// Genshin meadows look dense without actually being solid grass.
+const meadowDeep = new THREE.Color('#4f6e22');
+const meadowSun = new THREE.Color('#93ad3e');
+// How dark a blade's root is relative to its tuft colour (grass.js bakes this
+// into the blade vertices).
+export const GRASS_ROOT = 0.55;
+// The ground texture multiplies the vertex colour, so its mean is divided back
+// out to land the rendered ground on exactly the grass root colour.
+const TEX_MEAN = new THREE.Color('#5a682f');
+
+// Two scales of patch: the old fine undulation, plus broad drifts tens of metres
+// across, so the meadow has the large warm/cool swathes of the reference games.
+export function meadowColor(x, z, out) {
+  const n = 0.5 + 0.5 * Math.sin(x * 0.11 + z * 0.07) * Math.cos(x * 0.05 - z * 0.13);
+  const m = 0.5 + 0.5 * Math.sin(x * 0.023 - z * 0.031 + 1.7);
+  return out.copy(meadowDeep).lerp(meadowSun, n * 0.5 + m * 0.5);
+}
+
+const meadowGround = (x, z, out) => {
+  meadowColor(x, z, out);
+  out.r *= GRASS_ROOT / TEX_MEAN.r;
+  out.g *= GRASS_ROOT / TEX_MEAN.g;
+  out.b *= GRASS_ROOT / TEX_MEAN.b;
+  return out;
+};
+const tmp = new THREE.Color();
 const shore = new THREE.Color('#7d7452');
 const bed = new THREE.Color('#8a7f63'); // sunlit sandy bed — shows through the clear water
 
@@ -94,10 +121,9 @@ function buildTile(scene, mat, cell, seg) {
       c.copy(bed);
     } else if (sd < hw + 3.5) {
       const k = (sd - hw) / 3.5;
-      c.copy(shore).lerp(grassDark, THREE.MathUtils.clamp(k, 0, 1));
+      c.copy(shore).lerp(meadowGround(x, z, tmp), THREE.MathUtils.clamp(k, 0, 1));
     } else {
-      const n = 0.5 + 0.5 * Math.sin(x * 0.11 + z * 0.07) * Math.cos(x * 0.05 - z * 0.13);
-      c.copy(grassDark).lerp(grassLight, n * 0.7);
+      meadowGround(x, z, c);
     }
     // Per-vertex brightness jitter. Derived from position rather than drawn from
     // the RNG: adjacent tiles share an edge, and two different random values

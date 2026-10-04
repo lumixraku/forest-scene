@@ -462,95 +462,110 @@ export function makeLeafFillTexture(colors = ['#57652a', '#7c9440', '#a4b858']) 
   return toTexture(c);
 }
 
-// Fully opaque leaf surface for the solid crown shells. No alpha: the crown's
-// silhouette is its geometry, so this only has to supply leaf GRAIN.
+// One leaf clump for the billboard crowns: a round tuft of leaves whose edge is
+// made of individual leaf tips, so a crown built of these has the scalloped,
+// leaf-by-leaf silhouette of a Genshin / BotW tree instead of a smooth shell.
 //
-// It is deliberately almost flat. The first version baked big soft light/dark
-// lobes in here to give the crown volume, and at crown scale those lobes read as
-// camouflage blotches — a stretched military pattern wrapped around a cone. In
-// the Genshin model the texture stays nearly a single tone and ALL the volume
-// comes from the cel shader's terminator (see toon.js): warm lit plateau, cool
-// sky-lit shadow, hard edge between. So the marks here are small, low-contrast,
-// and dense enough to vanish into an even tone from more than a few metres.
+// The centre is a solid disc. Alpha-tested cards lose coverage as they
+// mip down — averaged alpha drops under the threshold and distant crowns
+// dissolve — and an opaque core keeps every mip level above it.
 //
-// Seamless in u (the lathe wraps u around the axis) by stamping every mark at x±S.
+// `needle` is the conifer variant: a spiky, slightly drooping puff of needle
+// sprays instead of broad leaves.
 //
-// `pierce` turns the sheet into openwork: the leaves are drawn on a TRANSPARENT
-// ground instead of a filled one, so the gaps between leaf clumps become real
-// holes and the sky reads through the crown. The holes are deliberately
-// clump-scale, not per-leaf — pinprick alpha at crown distance is just aliasing
-// noise, whereas gaps the size of a leaf cluster give the mass its depth. The
-// caller must pair this with alphaTest + DoubleSide, or the shell's far wall
-// disappears and the crown reads as a hollow husk.
-export function makeCanopyTexture(colors = ['#2f4a20', '#4a6b2a', '#6f9038'], { pierce = false, leaf = 'oval' } = {}) {
-  // 1024, not 512. This sheet wraps ONCE around a crown, and a big crown is ~44m
-  // in circumference, so at 512 one texel is ~9cm and an 18-texel leaf becomes a
-  // 1.6m petal — which is why the leaves read as cabbage no matter how the stroke
-  // lengths were tuned. Doubling the sheet halves every world-space feature at
-  // once, leaves and holes together, so the two scales below stay in proportion.
-  const S = 1024;
+// Returns { map, alphaMap } — see splitAlpha.
+export function makeLeafClumpTexture(colors, { leaf = 'oval' } = {}) {
+  const S = 256;
   const c = canvas(S, S);
   const ctx = c.getContext('2d');
+  const C = S / 2;
 
-  const wrap = (fn) => { for (const dx of [-S, 0, S]) { ctx.save(); ctx.translate(dx, 0); fn(); ctx.restore(); } };
-
-  if (!pierce) {
+  if (leaf === 'needle') {
+    // A spiky puff: a solid core of overlapping blobs with needle sprays
+    // radiating out of it, weighted downward so the clump droops. It has to
+    // cover about as much of the card as the leaf clumps do — a thin spray on
+    // an empty card renders as scattered specks, not as a pine.
     ctx.fillStyle = colors[1];
-    ctx.fillRect(0, 0, S, S);
-    // Leaf grain: small strokes in the three tones, no large-scale structure at
-    // all. Low alpha keeps any single stroke from becoming a visible speck.
-    ctx.globalAlpha = 0.5;
-    for (let i = 0; i < 4200; i++) {
-      wrap(() => drawLeaf(ctx, Math.random() * S, Math.random() * S,
-        Math.random() * Math.PI * 2, 5 + Math.random() * 8, colors, 0.55));
+    for (let i = 0; i < 6; i++) {
+      const a = Math.random() * Math.PI * 2, r = S * 0.06 * Math.random();
+      ctx.beginPath();
+      ctx.arc(C + Math.cos(a) * r, C + S * 0.03 + Math.sin(a) * r, S * (0.15 + Math.random() * 0.06), 0, Math.PI * 2);
+      ctx.fill();
     }
-    ctx.globalAlpha = 1;
-  } else {
-    // Rosettes of leaves around scattered centres. Coverage is the whole game:
-    // too dense and the holes close up into the solid sheet again, too sparse and
-    // the crown turns to lace and stops reading as a mass.
-    //
-    // Two scales, set independently. The CLUSTER radius sets how big the holes
-    // are; the LEAF length sets how coarse the grain inside a cluster is. Both
-    // are in texels, and the sheet wraps ONCE around the crown, so `S` converts
-    // them to metres (see the note on S above): leaves ~40-60cm.
-    //
-    // Coverage has to stay high enough that the clusters overlap into a mostly
-    // solid sheet and only occasionally leave a gap. The alpha cut applies at the
-    // silhouette too, so sparse clusters tear the shell's own outline into ripped
-    // tissue paper — which is the original "too messy" complaint coming back at a
-    // smaller scale. The silhouette belongs to the geometry; alpha's job here is
-    // a few sky gaps INSIDE an intact mass, so err on the dense side.
-    // Leaf shape is per-species. Maple and fan leaves are BROADER than the oval
-    // at the same `len`, so a clump of them covers more ground; their counts are
-    // scaled down to keep coverage — and therefore hole size — matched to the
-    // oval crowns. Without this the maples come out as solid sheets with no sky
-    // through them, which is the openwork trick failing silently.
-    const shape = leaf === 'maple' ? drawMapleLeaf : leaf === 'fan' ? drawFanLeaf : null;
-    const density = leaf === 'oval' ? 1 : 0.62;
-    const CLUMPS = 520;
-    for (let i = 0; i < CLUMPS; i++) {
-      const cx = Math.random() * S;
-      const cy = Math.random() * S;
-      const cr = 26 + Math.random() * 22;
-      const leaves = Math.round((30 + ((Math.random() * 20) | 0)) * density);
-      wrap(() => {
-        for (let k = 0; k < leaves; k++) {
-          const a = Math.random() * Math.PI * 2;
-          const r = Math.sqrt(Math.random()) * cr;
-          const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
-          const pa = a + (Math.random() - 0.5) * 1.4;
-          const len = 13 + Math.random() * 9;
-          if (shape) shape(ctx, px, py, pa, len, colors);
-          else drawLeaf(ctx, px, py, pa, len, colors, 0.62);
-        }
-      });
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 420; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r0 = Math.sqrt(Math.random()) * S * 0.2;
+      const x0 = C + Math.cos(a) * r0, y0 = C + Math.sin(a) * r0;
+      // longer on the underside, so the tuft hangs
+      const len = (16 + Math.random() * 16) * (1 + 0.35 * Math.max(0, Math.sin(a)));
+      const na = a + (Math.random() - 0.5) * 0.7 + 0.25 * Math.cos(a);
+      const r = Math.random();
+      ctx.strokeStyle = r < 0.34 ? colors[0] : r < 0.72 ? colors[1] : colors[2];
+      ctx.lineWidth = 1.6 + Math.random() * 1.8;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x0 + Math.cos(na) * len, y0 + Math.sin(na) * len);
+      ctx.stroke();
     }
+    shadeTopDown(ctx, S, S, 0.16, 0.3);
+    return splitAlpha(c, colors[1]);
   }
 
-  const tex = toTexture(c);
-  tex.wrapS = THREE.RepeatWrapping; // u is seamless; v is clamped
-  return tex;
+  // the core is a few overlapping blobs, not one disc — a perfect circle under
+  // the leaves still shows through as a coin outline
+  ctx.fillStyle = colors[1];
+  for (let i = 0; i < 5; i++) {
+    const a = Math.random() * Math.PI * 2, r = S * 0.07 * Math.random();
+    ctx.beginPath();
+    ctx.arc(C + Math.cos(a) * r, C + Math.sin(a) * r, S * (0.13 + Math.random() * 0.07), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const shape = leaf === 'maple' ? drawMapleLeaf : leaf === 'fan' ? drawFanLeaf : null;
+  const N = leaf === 'oval' ? 170 : 110;
+  for (let i = 0; i < N; i++) {
+    const a = Math.random() * Math.PI * 2;
+    // biased outward, so the rim is crowded with leaf tips and the core stays
+    // solid; the radius wobbles with angle so the outline is lobed, not round
+    const r = Math.pow(Math.random(), 0.6) * S * (0.27 + 0.08 * Math.sin(a * 3 + 1.3));
+    const x = C + Math.cos(a) * r, y = C + Math.sin(a) * r;
+    // leaves point away from the clump centre, like a real terminal shoot
+    const pa = a + (Math.random() - 0.5) * 1.1;
+    // short enough that no leaf tip reaches the canvas edge and gets sliced flat
+    const len = 20 + Math.random() * 14;
+    if (shape) shape(ctx, x, y, pa, len * 1.2, colors);
+    else drawLeaf(ctx, x, y, pa, len, colors, 0.5);
+  }
+  shadeTopDown(ctx, S, S, 0.14, 0.26);
+  return splitAlpha(c, colors[1]);
+}
+
+// Split a drawn-on-transparent canvas into an OPAQUE colour map plus a separate
+// alpha map. A canvas stores fully transparent pixels as black, so in a single
+// RGBA texture every mip level averages the leaf colour with black: distant
+// crowns go dark and murky. With the empty area filled with the clump's own
+// mid-tone, the colour mips stay leaf-coloured and only the alpha thins out.
+function splitAlpha(src, bg) {
+  const { width: W, height: H } = src;
+  const col = canvas(W, H);
+  const cx = col.getContext('2d');
+  cx.fillStyle = bg;
+  cx.fillRect(0, 0, W, H);
+  cx.drawImage(src, 0, 0);
+
+  const a = canvas(W, H);
+  const ax = a.getContext('2d');
+  ax.drawImage(src, 0, 0);
+  ax.globalCompositeOperation = 'source-in';
+  ax.fillStyle = '#fff';
+  ax.fillRect(0, 0, W, H);
+  ax.globalCompositeOperation = 'destination-over';
+  ax.fillStyle = '#000';
+  ax.fillRect(0, 0, W, H);
+  const alphaMap = new THREE.CanvasTexture(a);
+  alphaMap.anisotropy = 8;
+  return { map: toTexture(col), alphaMap };
 }
 
 // One whole spruce branch drawn side-on: a bezier stem with alternating side
